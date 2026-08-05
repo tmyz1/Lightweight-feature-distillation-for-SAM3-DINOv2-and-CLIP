@@ -1,0 +1,16 @@
+# @package _global_
+defaults:
+  - roboflow_v100_full_ft_100_images
+  - _self_
+
+roboflow_train:
+  num_images: 1
+
+scratch:
+  num_train_workers: 0
+  num_val_workers: 0
+
+trainer:
+  max_epochs: 1
+  val_epoch_freq: 1
+  skip_saving_ckpts: true

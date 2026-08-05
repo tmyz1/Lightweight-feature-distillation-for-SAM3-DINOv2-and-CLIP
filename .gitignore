@@ -1,0 +1,32 @@
+# Training outputs / checkpoints
+output/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Python cache
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# IDE
+.idea/
+
+# Triton / CUDA cache
+.triton-cache/
+
+# Logs
+*.log
+runs/
+wandb/
+
+# Environment
+.env
+.venv/
+venv/
+conda-meta/
+
+# Evaluation outputs
+eval_outputs/
+**/eval_outputs/

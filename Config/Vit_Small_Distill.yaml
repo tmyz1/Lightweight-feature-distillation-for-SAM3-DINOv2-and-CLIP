@@ -1,0 +1,88 @@
+device: "cuda"
+
+dataset:
+  root: "E:/my_data/COCO"
+  train_split: "train2017"
+  val_split: "val2017"
+  eval_category_chunk_size: 2
+  num_images: null
+  val_num_images: 100
+  resolution: 1008
+  num_workers: 0
+  batch_size: 4
+  enable_segmentation: false
+
+Student:
+  model: "vit_small"
+  kd_resolution: 518
+  vit_small_checkpoint_path: "E:/reproduce/weights/DINO-V2/vit_small_patch14_reg4_dinov2.safetensors"
+
+Sam3:
+  checkpoint_path: "E:/reproduce/weights/sam3/sam3.pt"
+  bpe_path: "E:/pycharm/sam3-main/sam3-main/sam3-main/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
+  device: "cuda"
+  enable_segmentation: false
+
+CLIP:
+  checkpoint_path: "E:/reproduce/weights/CLIP/ViT-L-14.pt"
+  bpe_path: "E:/pycharm/sam3-main/sam3-main/sam3-main/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
+  device: "cuda"
+  resolution: 224
+  out_indices: [23]
+
+DINO_V2:
+  checkpoint: "E:/reproduce/weights/DINO-V2/dinov2_vitl14_reg4_pretrain.pth"
+  bpe_path: "E:/pycharm/sam3-main/sam3-main/sam3-main/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
+  device: "cuda"
+  resolution: 224
+  return_interm_layers: [23]
+
+Adapter:
+  student_channel: [384]
+  student_cls_channel: [384]
+  teacher_channel: [1024]
+  target_sizes:
+    - [72, 72]
+
+optim:
+  min_lr: 1.0e-6
+  trunk_lr: 1.0e-4
+  neck_lr: 2.0e-4
+  adapter_lr: 1.0e-4
+  betas: [0.9, 0.999]
+  weight_decay: 0.05
+  max_grad_norm: 1.0
+
+param_scheduler:
+  warmup_updates: 500
+  warmup_start_factor: 0.1
+  min_lr: 1.0e-6
+
+loss:
+  features_loss_weight: 0.35
+  necks_loss_weight: 0.50
+  cls_tokens_loss_weight: 0.15
+  normalize_features: true
+  sam3_features_weight: 1.0
+  dino_v2_features_weight: 0.15
+  clip_features_weight: 0.15
+  losses_type: ["cosine", "smooth_l1"]
+  features_loss:
+    cosine: 0.5
+    smooth_l1: 0.5
+  cls_token_loss:
+    cosine: 0.5
+    smooth_l1: 0.5
+
+train:
+  max_steps: 5
+  eval_every_steps: 1
+  log_every_batches: 20
+  amp: true
+  seed: 123
+
+eval:
+  enabled: true
+  max_dets: 100
+  log_every_batches: 20
+  output_dir: "KD/eval_outputs/vit_small"
