@@ -14,6 +14,7 @@ dataset:
 
 Student:
   kd_resolution: 384
+  position_encoding_resolution: 1008
   swin_backbone:
     pretrain_img_size: 384
     in_chans: 3
@@ -114,6 +115,7 @@ train:
 
 eval:
   enabled: true
+  amp: false
   max_dets: 100
   log_every_batches: 20
   output_dir: "KD/eval_outputs"

@@ -12,7 +12,6 @@ import torch.nn as nn
 from safetensors.torch import load_file
 from huggingface_hub import hf_hub_download
 from iopath.common.file_io import g_pathmgr
-from dinov2.models.vision_transformer import vit_small as dinov2_vit_small
 from sam3.model.decoder import (
     DecoupledTransformerDecoderLayerv2,
     SimpleRoPEAttention,
@@ -38,7 +37,7 @@ from sam3.model.model_misc import (
     TransformerWrapper,
 )
 from sam3.model.multiplex_utils import MultiplexController
-from sam3.model.necks import Sam3DualViTDetNeck, Sam3TriViTDetNeck, Sam3SwinFPNDetNeck, Sam3ViTSmallFPNDetNeck
+from sam3.model.necks import Sam3DualViTDetNeck, Sam3TriViTDetNeck
 from sam3.model.position_encoding import PositionEmbeddingSine
 from sam3.model.sam1_task_predictor import SAM3InteractiveImagePredictor
 from sam3.model.sam3_image import Sam3Image, Sam3ImageOnVideoMultiGPU
@@ -49,7 +48,6 @@ from sam3.model.text_encoder_ve import VETextEncoder
 from sam3.model.tokenizer_ve import SimpleTokenizer
 from sam3.model.video_tracking_multiplex import VideoTrackingDynamicMultiplex
 from sam3.model.vitdet import ViT
-from sam3.model.Swin_Transformer import SwinTransformer
 from sam3.model.vl_combiner import SAM3VLBackbone, SAM3VLBackboneTri, TriHeadVisionOnly
 from sam3.sam.transformer import RoPEAttention
 
@@ -120,7 +118,7 @@ def _create_vit_backbone(
         use_fused_mlp=use_fused_mlp,
     )
 
-"""Swin-Transformer 特征提取器"""
+"""Vit Small 特征提取器"""
 class DinoV2SmallBackbone(nn.Module):
     def __init__(self, trunk: nn.Module):
         super().__init__()
@@ -147,62 +145,6 @@ class DinoV2SmallBackbone(nn.Module):
         return [feature_map]
 
 
-def _load_vit_small_pretrained(model: nn.Module, checkpoint_path: str):
-    state_dict = load_file(checkpoint_path, device="cpu")
-    if "reg_token" in state_dict and "register_tokens" not in state_dict:
-        state_dict["register_tokens"] = state_dict.pop("reg_token")
-    if (
-        "pos_embed" in state_dict
-        and state_dict["pos_embed"].shape[1] + 1 == model.pos_embed.shape[1]
-    ):
-        cls_pos_embed = model.pos_embed[:, :1].detach().clone()
-        state_dict["pos_embed"] = torch.cat((cls_pos_embed, state_dict["pos_embed"]), dim=1)
-    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
-    if missing_keys or unexpected_keys:
-        print(
-            f"loaded {checkpoint_path} with {len(missing_keys)} missing keys and "
-            f"{len(unexpected_keys)} unexpected keys."
-        )
-        if missing_keys:
-            print(f"missing examples: {missing_keys[:5]}")
-        if unexpected_keys:
-            print(f"unexpected examples: {unexpected_keys[:5]}")
-
-
-def _create_dinov2_vit_small_backbone(
-    checkpoint_path: str = r"E:\reproduce\weights\DINO-V2\vit_small_patch14_reg4_dinov2.safetensors",
-):
-    vit_backbone = dinov2_vit_small(
-        img_size=518,
-        patch_size=14,
-        init_values=1.0,
-        ffn_layer="mlp",
-        block_chunks=0,
-        num_register_tokens=4,
-        interpolate_antialias=True,
-        interpolate_offset=0.0,
-    )
-    if checkpoint_path is not None:
-        _load_vit_small_pretrained(vit_backbone, checkpoint_path)
-    return DinoV2SmallBackbone(vit_backbone)
-
-
-def _create_vit_small_neck(
-    position_encoding,
-    vit_small_backbone,
-    enable_inst_interactivity=False,
-):
-    return Sam3ViTSmallFPNDetNeck(
-        position_encoding=position_encoding,
-        trunk=vit_small_backbone,
-        d_model=256,
-        in_channels=vit_small_backbone.channel_list[-1],
-        vit_feature_size=(72, 72),
-        scale_factors=(4.0, 2.0, 1.0, 0.5),
-        add_sam2_neck=enable_inst_interactivity,
-    )
-
-
 def _as_tuple(value):
     if isinstance(value, list):
         return tuple(_as_tuple(item) for item in value)
@@ -213,45 +155,6 @@ def _resolve_nn_layer(value):
     if isinstance(value, str):
         return getattr(nn, value)
     return value
-
-
-def _create_swin_backbone(
-    compile_mode=None,
-    use_fa3=False,
-    use_rope_real=False,
-    swin_cfg: Optional[Dict[str, Any]] = None,
-):
-    cfg = {
-        "pretrain_img_size": 384,
-        "in_chans": 3,
-        "embed_dim": 192,
-        "patch_size": 4,
-        "window_size": 12,
-        "mlp_ratio": 4.0,
-        "depths": (2, 2, 18, 2),
-        "num_heads": (6, 12, 24, 48),
-        "strides": (4, 2, 2, 2),
-        "out_indices": (0, 1, 2, 3),
-        "qkv_bias": True,
-        "qk_scale": None,
-        "patch_norm": True,
-        "drop_rate": 0.0,
-        "attn_drop_rate": 0.0,
-        "drop_path_rate": 0.1,
-        "use_abs_pos_embed": False,
-        "norm_layer": nn.LayerNorm,
-        "act_layer": nn.GELU,
-        "use_act_checkpoint": False,
-        "frozen_stages": -1,
-        "pretrained": r"E:\reproduce\weights\SwinTransformer\swin_large_384.pth",
-    }
-    cfg.update(swin_cfg or {})
-    for key in ("depths", "num_heads", "strides", "out_indices", "pretrain_img_size"):
-        if key in cfg:
-            cfg[key] = _as_tuple(cfg[key])
-    cfg["norm_layer"] = _resolve_nn_layer(cfg["norm_layer"])
-    cfg["act_layer"] = _resolve_nn_layer(cfg["act_layer"])
-    return SwinTransformer(**cfg)
 
 """
 vit neck，将vit特征层统一通道数，构建多尺度特征金字塔，送入后续的检测器中去
@@ -264,29 +167,6 @@ def _create_vit_neck(position_encoding, vit_backbone, enable_inst_interactivity=
         scale_factors=[4.0, 2.0, 1.0, 0.5],
         trunk=vit_backbone,
         add_sam2_neck=enable_inst_interactivity,
-    )
-
-def _create_swin_neck(
-    position_encoding,
-    Swin_backbone,
-    enable_inst_interactivity=False,
-    neck_cfg: Optional[Dict[str, Any]] = None,
-):
-    cfg = {
-        "d_model": 256,
-        "scale_factors": (4.0, 2.0, 1.0, 0.5),
-        "in_channels": None,
-    }
-    cfg.update(neck_cfg or {})
-    cfg.pop("target_sizes", None)
-    cfg["scale_factors"] = _as_tuple(cfg["scale_factors"])
-    if cfg.get("in_channels") is not None:
-        cfg["in_channels"] = _as_tuple(cfg["in_channels"])
-    return Sam3SwinFPNDetNeck(
-        position_encoding=position_encoding,
-        trunk=Swin_backbone,
-        add_sam2_neck=enable_inst_interactivity,
-        **cfg,
     )
 
 """
@@ -725,48 +605,6 @@ def _create_vision_backbone(
     # Visual neck
     return vit_neck
 
-#修改backbone为 Swin-Transformer ，同样包含backbone和neck的总和
-def _create_Swin_vision_backbone(
-    compile_mode=None,
-    enable_inst_interactivity=True,
-    swin_backbone_cfg: Optional[Dict[str, Any]] = None,
-    swin_neck_cfg: Optional[Dict[str, Any]] = None,
-) -> Sam3SwinFPNDetNeck:
-    # Position encoding
-    position_encoding = _create_position_encoding(precompute_resolution=1008)
-    # 主要改动部分
-    Swin_backbone: SwinTransformer = _create_swin_backbone(
-        compile_mode=compile_mode,
-        swin_cfg=swin_backbone_cfg,
-    )
-    Swin_neck: Sam3SwinFPNDetNeck = _create_swin_neck(
-        position_encoding,
-        Swin_backbone,
-        enable_inst_interactivity=enable_inst_interactivity,
-        neck_cfg=swin_neck_cfg,
-    )
-    # Swin Neck
-    return Swin_neck
-
-"""
-SAM3中Transformer部分总和，包含encoder部分和decoder部分
-"""
-def _create_vit_small_backbone(
-    enable_inst_interactivity=True,
-    vit_small_checkpoint_path: str = r"E:\reproduce\weights\DINO-V2\vit_small_patch14_reg4_dinov2.safetensors",
-) -> Sam3ViTSmallFPNDetNeck:
-    position_encoding = _create_position_encoding(precompute_resolution=1008)
-    vit_backbone = _create_dinov2_vit_small_backbone(
-        checkpoint_path=vit_small_checkpoint_path,
-    )
-    vit_neck = _create_vit_small_neck(
-        position_encoding,
-        vit_backbone,
-        enable_inst_interactivity=enable_inst_interactivity,
-    )
-    return vit_neck
-
-
 def _create_sam3_transformer(
     has_presence_token: bool = True, use_fa3: bool = False
 ) -> TransformerWrapper:
@@ -944,148 +782,6 @@ def build_sam3_image_model(
     # Setup device and mode
     model = _setup_device_and_mode(model, device, eval_mode)
 
-    return model
-
-"""
-创建Swin_SAM3图像模型整体模型
-"""
-def build_swin_sam3_image_model(
-    bpe_path=None,
-    device="cuda" if torch.cuda.is_available() else "cpu",
-    eval_mode=True,
-    checkpoint_path=None,
-    load_from_HF=False,
-    enable_segmentation=True,
-    enable_inst_interactivity=False,
-    compile=False,
-    swin_backbone_cfg: Optional[Dict[str, Any]] = None,
-    swin_neck_cfg: Optional[Dict[str, Any]] = None,
-):
-    if bpe_path is None:
-        bpe_path = pkg_resources.resource_filename(
-            "sam3", "assets/bpe_simple_vocab_16e6.txt.gz"
-        )
-    compile_mode = "default" if compile else None
-    #主要修改部分
-    vision_encoder = _create_Swin_vision_backbone(
-        compile_mode=compile_mode,
-        enable_inst_interactivity=enable_inst_interactivity,
-        swin_backbone_cfg=swin_backbone_cfg,
-        swin_neck_cfg=swin_neck_cfg,
-    )
-    text_encoder = _create_text_encoder(bpe_path)
-
-    #主要修改部分
-    backbone = _create_vl_backbone(vision_encoder, text_encoder)
-
-    transformer = _create_sam3_transformer()
-
-    dot_prod_scoring = _create_dot_product_scoring()
-
-    segmentation_head = (
-        _create_segmentation_head(compile_mode=compile_mode)
-        if enable_segmentation
-        else None
-    )
-
-    input_geometry_encoder = _create_geometry_encoder()
-    if enable_inst_interactivity:
-        sam3_pvs_base = build_tracker(apply_temporal_disambiguation=False)
-        inst_predictor = SAM3InteractiveImagePredictor(sam3_pvs_base)
-    else:
-        inst_predictor = None
-    # Create the Swin_SAM3 model
-    model = _create_sam3_model(
-        backbone,
-        transformer,
-        input_geometry_encoder,
-        segmentation_head,
-        dot_prod_scoring,
-        inst_predictor,
-        eval_mode,
-    )
-    if load_from_HF and checkpoint_path is None:
-        checkpoint_path = download_ckpt_from_hf(version="sam3")
-    # 如果权重文件只有一部分适配，skip_prefixes表示需要跳过的地方
-    if checkpoint_path is not None:
-        _load_checkpoint(
-            model,
-            checkpoint_path,
-            skip_prefixes=("backbone.vision_backbone.",),
-        )
-    #权重文件完全适配
-    # if checkpoint_path is not None:
-    #     _load_checkpoint(
-    #         model,
-    #         checkpoint_path,
-    #     )
-
-    # Setup device and mode
-    model = _setup_device_and_mode(model, device, eval_mode)
-
-    return model
-
-"""
-从Hugging Face上面下载权重文件
-"""
-def build_vit_small_image_model(
-    bpe_path=None,
-    device="cuda" if torch.cuda.is_available() else "cpu",
-    eval_mode=True,
-    checkpoint_path=r"E:\reproduce\weights\sam3\sam3.pt",
-    load_from_HF=False,
-    enable_segmentation=True,
-    enable_inst_interactivity=False,
-    compile=False,
-    vit_small_checkpoint_path: str = r"E:\reproduce\weights\DINO-V2\vit_small_patch14_reg4_dinov2.safetensors",
-):
-    if bpe_path is None:
-        bpe_path = pkg_resources.resource_filename(
-            "sam3", "assets/bpe_simple_vocab_16e6.txt.gz"
-        )
-    compile_mode = "default" if compile else None
-    vision_encoder = _create_vit_small_backbone(
-        enable_inst_interactivity=enable_inst_interactivity,
-        vit_small_checkpoint_path=vit_small_checkpoint_path,
-    )
-    if compile_mode is not None:
-        vision_encoder = torch.compile(vision_encoder)
-
-    text_encoder = _create_text_encoder(bpe_path)
-    backbone = _create_vl_backbone(vision_encoder, text_encoder)
-    transformer = _create_sam3_transformer()
-    dot_prod_scoring = _create_dot_product_scoring()
-    segmentation_head = (
-        _create_segmentation_head(compile_mode=compile_mode)
-        if enable_segmentation
-        else None
-    )
-    input_geometry_encoder = _create_geometry_encoder()
-    if enable_inst_interactivity:
-        sam3_pvs_base = build_tracker(apply_temporal_disambiguation=False)
-        inst_predictor = SAM3InteractiveImagePredictor(sam3_pvs_base)
-    else:
-        inst_predictor = None
-
-    model = _create_sam3_model(
-        backbone,
-        transformer,
-        input_geometry_encoder,
-        segmentation_head,
-        dot_prod_scoring,
-        inst_predictor,
-        eval_mode,
-    )
-    if load_from_HF and checkpoint_path is None:
-        checkpoint_path = download_ckpt_from_hf(version="sam3")
-    if checkpoint_path is not None:
-        _load_checkpoint(
-            model,
-            checkpoint_path,
-            skip_prefixes=("backbone.vision_backbone.",),
-        )
-
-    model = _setup_device_and_mode(model, device, eval_mode)
     return model
 
 

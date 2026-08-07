@@ -4,50 +4,16 @@ from typing import Any, Dict, List, Optional, Sequence
 import torch
 from torch import nn
 from torch.nn import functional as F
-
+from KD.model.vit_small_patch14_reg4_dinov2 import Vit_Small_feature_extractor
+from KD.model.swin_large_384 import Swin_Sam3_feature_extractor
 from KD.adapters import MultiScaleFeatureAlignAdapter,MultiScaleClsTokenAlignAdapter
 from KD.KD_Loss import cls_token_total_loss, features_total_loss
 from KD.build_teacher_model import (
     CLIP_feature_extractor,
     DINO_V2_feature_extractor,
     Sam3_feature_extractor,
-    Vit_Small_feature_extractor,
-    extract_distillation_features,
 )
 from sam3.model.data_misc import BatchedDatapoint
-from sam3.model_builder import build_swin_sam3_image_model
-
-#学生网络特征提取器
-class Swin_Sam3_feature_extractor(nn.Module):
-    def __init__(self, cfg: Dict[str, Any], device: torch.device):
-        super().__init__()
-        self.device = torch.device(device)
-        self.cfg = cfg
-        self.model = build_swin_sam3_image_model(
-            bpe_path=self.cfg.get("Sam3", {}).get("bpe_path"),
-            checkpoint_path=self.cfg.get("Sam3", {}).get("checkpoint_path"),
-            device=str(self.device),
-            eval_mode=False,
-            enable_segmentation=bool(self.cfg.get("Sam3", {}).get("enable_segmentation", False)),
-            enable_inst_interactivity=False,
-            swin_backbone_cfg=self.cfg.get("Student", {}).get("swin_backbone"),
-            swin_neck_cfg=self.cfg.get("Student", {}).get("swin_neck"),
-        )
-        self.model.to(self.device)
-
-    def forward(self, batch: BatchedDatapoint):
-        img = getattr(batch, "student_img_batch", batch.img_batch).to(device=self.device, dtype=torch.float32)
-        vision_backbone = self.model.backbone.vision_backbone
-        features = extract_distillation_features(vision_backbone, img)
-        if not hasattr(vision_backbone, "_build_simple_fpn_outputs"):
-            raise TypeError(
-                "Student vision backbone must expose _build_simple_fpn_outputs "
-                "for neck distillation."
-            )
-        neck_features = vision_backbone._build_simple_fpn_outputs(
-            features[0], vision_backbone.output_convs
-        )
-        return features, neck_features
 
 def swin_features_to_pseudo_cls_tokens(features: Sequence[torch.Tensor]) -> List[torch.Tensor]:
     return [feature.mean(dim=(-2, -1)) for feature in features]
@@ -55,6 +21,29 @@ def swin_features_to_pseudo_cls_tokens(features: Sequence[torch.Tensor]) -> List
 
 def detach_teacher_tensors(tensors: Sequence[torch.Tensor]) -> List[torch.Tensor]:
     return [tensor.detach().clone().float() for tensor in tensors]
+
+
+def expand_per_layer_config(
+    values: Sequence[Any] | Any,
+    num_layers: int,
+    name: str,
+) -> list[Any]:
+    """Expand one shared config value or validate explicit per-layer values."""
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        values = [values]
+    else:
+        values = list(values)
+    if not values:
+        raise ValueError(f"Adapter.{name} must contain at least one value.")
+    if len(values) == 1:
+        return values * num_layers
+    if len(values) != num_layers:
+        raise ValueError(
+            f"Adapter.{name} has {len(values)} entries, but the configured "
+            f"student and teachers return {num_layers} feature layers. Use one "
+            f"shared entry or exactly {num_layers} entries."
+        )
+    return values
 
 
 STUDENT_FEATURE_EXTRACTORS = {
@@ -118,12 +107,35 @@ class Distill(nn.Module):
 
         #构建adapter，修改学生特征与各个教师模型的特征空间通道尺寸相同
         adapter_cfg = self.cfg.get("Adapter")
-        self.student_channels: List[int] = adapter_cfg.get("student_channel")
-        self.student_cls_channels: List[int] = adapter_cfg.get(
-            "student_cls_channel", self.student_channels
+        student_feature_layers = self.Student.num_feature_layers
+        teacher_feature_layers = {
+            "SAM3": self.Sam3.num_feature_layers,
+            "DINO-V2": self.Dino_v2.num_feature_layers,
+            "CLIP": self.CLIP.num_feature_layers,
+        }
+        if any(count != student_feature_layers for count in teacher_feature_layers.values()):
+            counts = ", ".join(
+                f"{name}={count}" for name, count in teacher_feature_layers.items()
+            )
+            raise ValueError(
+                "Feature-layer counts must match for distillation: "
+                f"student={student_feature_layers}, {counts}."
+            )
+
+        self.student_channels: List[int] = expand_per_layer_config(
+            adapter_cfg.get("student_channel"), student_feature_layers, "student_channel"
         )
-        self.teacher_channels: List[int] = adapter_cfg.get("teacher_channel")
-        self.target_sizes: List[List[int]] = adapter_cfg.get("target_sizes")
+        self.student_cls_channels: List[int] = expand_per_layer_config(
+            adapter_cfg.get("student_cls_channel", self.student_channels),
+            student_feature_layers,
+            "student_cls_channel",
+        )
+        self.teacher_channels: List[int] = expand_per_layer_config(
+            adapter_cfg.get("teacher_channel"), student_feature_layers, "teacher_channel"
+        )
+        self.target_sizes: List[List[int]] = expand_per_layer_config(
+            adapter_cfg.get("target_sizes"), student_feature_layers, "target_sizes"
+        )
         dino_v2_grid_size = int(self.cfg.get("DINO_V2", {}).get("resolution", 224)) // 14
         clip_grid_size = int(self.cfg.get("CLIP", {}).get("resolution", 224)) // 14
         self.dino_v2_target_sizes: List[List[int]] = [[dino_v2_grid_size, dino_v2_grid_size] for _ in self.teacher_channels]
@@ -218,7 +230,6 @@ class Distill(nn.Module):
         necks_loss_weight = loss_cfg.get("necks_loss_weight")
         cls_tokens_loss_weight = loss_cfg.get("cls_tokens_loss_weight")
         losses_type = loss_cfg.get("losses_type")
-        normalize_features = bool(loss_cfg.get("normalize_features", True))
 
         #计算backbone层面上的损失
         sam3_loss = features_total_loss(
@@ -276,7 +287,7 @@ class Distill(nn.Module):
             sam3_loss["total_loss"] * teacher_feature_weights["sam3"]
             + dino_v2_loss["total_loss"] * teacher_feature_weights["dino_v2"]
             + clip_loss["total_loss"] * teacher_feature_weights["clip"]
-        ) / 3
+        ) / feature_weight_sum
         cls_tokens_loss = (
             dino_v2_cls_loss["cls_total_loss"]
             + clip_cls_loss["cls_total_loss"]

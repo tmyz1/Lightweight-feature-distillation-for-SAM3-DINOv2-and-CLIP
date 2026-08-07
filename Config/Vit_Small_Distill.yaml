@@ -15,27 +15,30 @@ dataset:
 Student:
   model: "vit_small"
   kd_resolution: 518
+  position_encoding_resolution: 1008
   vit_small_checkpoint_path: "E:/reproduce/weights/DINO-V2/vit_small_patch14_reg4_dinov2.safetensors"
+  vit_small_intermediate_layers: [2, 5, 8, 11]
 
 Sam3:
   checkpoint_path: "E:/reproduce/weights/sam3/sam3.pt"
   bpe_path: "E:/pycharm/sam3-main/sam3-main/sam3-main/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
   device: "cuda"
   enable_segmentation: false
+  sam3_intermediate_layers: [7,15,23,31]
 
 CLIP:
   checkpoint_path: "E:/reproduce/weights/CLIP/ViT-L-14.pt"
   bpe_path: "E:/pycharm/sam3-main/sam3-main/sam3-main/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
   device: "cuda"
   resolution: 224
-  out_indices: [23]
+  clip_intermediate_layers: [5,11,17,23]
 
 DINO_V2:
   checkpoint: "E:/reproduce/weights/DINO-V2/dinov2_vitl14_reg4_pretrain.pth"
   bpe_path: "E:/pycharm/sam3-main/sam3-main/sam3-main/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
   device: "cuda"
   resolution: 224
-  return_interm_layers: [23]
+  dino_v2_intermediate_layers: [5,11,17,23]
 
 Adapter:
   student_channel: [384]
@@ -75,14 +78,16 @@ loss:
     smooth_l1: 0.5
 
 train:
-  max_steps: 5
+  max_steps: 10
   eval_every_steps: 1
-  log_every_batches: 20
+  log_every_batches: 50
   amp: true
   seed: 123
+  return_interm_layers: True
 
 eval:
   enabled: true
+  amp: true
   max_dets: 100
-  log_every_batches: 20
+  log_every_batches: 50
   output_dir: "KD/eval_outputs/vit_small"

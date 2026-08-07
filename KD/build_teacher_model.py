@@ -14,11 +14,29 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from sam3.model_builder import build_sam3_image_model, build_vit_small_image_model
+from sam3.model_builder import build_sam3_image_model
 from sam3.model.data_misc import BatchedDatapoint
 from dinov2.hub.backbones import dinov2_vitl14_reg
 from dinov2.layers.attention import Attention, MemEffAttention
 import clip
+
+
+def replace_dinov2_memory_efficient_attention(model: nn.Module) -> None:
+    """Use native PyTorch attention so DINOv2 remains stable under BF16 AMP."""
+    for block in model.blocks:
+        attention = block.attn
+        if not isinstance(attention, MemEffAttention):
+            continue
+        replacement = Attention(
+            dim=attention.dim,
+            num_heads=attention.num_heads,
+            qkv_bias=attention.qkv.bias is not None,
+            proj_bias=attention.proj.bias is not None,
+            attn_drop=getattr(attention.attn_drop, "p", attention.attn_drop),
+            proj_drop=getattr(attention.proj_drop, "p", attention.proj_drop),
+        )
+        replacement.load_state_dict(attention.state_dict())
+        block.attn = replacement
 
 
 def extract_backbone_and_neck_features(
@@ -123,56 +141,6 @@ def extract_distillation_features(
     return select_feature_layers(backbone_features, layer_indices)
 
 
-def extract_vit_small_features(
-    vision_backbone: torch.nn.Module,
-    img: torch.Tensor,
-) -> list[torch.Tensor]:
-    """Return the ViT-Small neck's single ViT-like 256-channel feature map."""
-    features, _ = extract_vit_small_feature_and_neck(vision_backbone, img)
-    return features
-
-
-def extract_vit_small_feature_and_neck(
-    vision_backbone: torch.nn.Module,
-    img: torch.Tensor,
-) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-    features, neck_features, _ = extract_vit_small_feature_neck_and_cls(
-        vision_backbone, img
-    )
-    return features, neck_features
-
-
-def extract_vit_small_feature_neck_and_cls(
-    vision_backbone: torch.nn.Module,
-    img: torch.Tensor,
-) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
-    required_attributes = ("trunk", "feature_proj", "_project_to_vit_feature")
-    if not all(hasattr(vision_backbone, name) for name in required_attributes):
-        raise TypeError(
-            "Expected Sam3ViTSmallFPNDetNeck, got "
-            f"{type(vision_backbone)}."
-        )
-
-    student_trunk = vision_backbone.trunk
-    raw_features = student_trunk.trunk.forward_features(img)
-    patch_tokens = raw_features["x_norm_patchtokens"]
-    batch_size, _, channels = patch_tokens.shape
-    patch_h = img.shape[-2] // student_trunk.patch_size
-    patch_w = img.shape[-1] // student_trunk.patch_size
-    feature = (
-        patch_tokens.reshape(batch_size, patch_h, patch_w, channels)
-        .permute(0, 3, 1, 2)
-        .contiguous()
-    )
-    vit_like = vision_backbone._project_to_vit_feature(
-        feature, vision_backbone.feature_proj
-    )
-    detector_features = vision_backbone._build_simple_fpn_outputs(
-        vit_like, vision_backbone.output_convs
-    )
-    return [feature], detector_features, [raw_features["x_norm_clstoken"]]
-
-
 def aggregate_detector_features(
     detector_features: Sequence[torch.Tensor],
     target_size: Sequence[int],
@@ -227,52 +195,6 @@ def extract_sam3_backbone_and_neck_features(
     return select_feature_layers(backbone_features, layer_indices), neck_features
 
 
-def replace_vit_small_memory_efficient_attention(model: torch.nn.Module) -> None:
-    """Use PyTorch attention so ViT-Small backward works on non-Hopper GPUs."""
-    trunk = model.backbone.vision_backbone.trunk.trunk
-    for block in trunk.blocks:
-        attention = block.attn
-        if not isinstance(attention, MemEffAttention):
-            continue
-        replacement = Attention(
-            dim=attention.dim,
-            num_heads=attention.num_heads,
-            qkv_bias=attention.qkv.bias is not None,
-            proj_bias=attention.proj.bias is not None,
-            attn_drop=getattr(attention.attn_drop, "p", attention.attn_drop),
-            proj_drop=getattr(attention.proj_drop, "p", attention.proj_drop),
-        )
-        replacement.load_state_dict(attention.state_dict())
-        block.attn = replacement
-
-
-class Vit_Small_feature_extractor(torch.nn.Module):
-    def __init__(self, cfg: Dict[str, Any], device: torch.device):
-        super().__init__()
-        self.device = torch.device(device)
-        self.cfg = cfg
-        student_cfg = self.cfg.get("Student", {})
-        self.model = build_vit_small_image_model(
-            bpe_path=self.cfg.get("Sam3", {}).get("bpe_path"),
-            checkpoint_path=self.cfg.get("Sam3", {}).get("checkpoint_path"),
-            device=str(self.device),
-            eval_mode=False,
-            enable_segmentation=bool(self.cfg.get("Sam3", {}).get("enable_segmentation", False)),
-            enable_inst_interactivity=False,
-            vit_small_checkpoint_path=student_cfg.get("vit_small_checkpoint_path"),
-        )
-        replace_vit_small_memory_efficient_attention(self.model)
-        self.model.to(self.device)
-
-    def forward(self, batch: BatchedDatapoint):
-        img = getattr(batch, "student_img_batch", batch.img_batch).to(
-            device=self.device, dtype=torch.float32
-        )
-        return extract_vit_small_feature_neck_and_cls(
-            self.model.backbone.vision_backbone, img
-        )
-
-
 class Sam3_feature_extractor(torch.nn.Module):
     def __init__(self,
         checkpoint_path: str | nn.Module,
@@ -291,15 +213,42 @@ class Sam3_feature_extractor(torch.nn.Module):
         )
         self.model.to(device)
         self.model.eval()
-        self.return_interm_layers = (cfg or {}).get("Sam3", {}).get(
-            "return_interm_layers"
+        self.return_interm_layers = bool(
+            (cfg or {}).get("train", {}).get("return_interm_layers", False)
         )
+        vision_backbone = self.model.backbone.vision_backbone
+        num_blocks = len(vision_backbone.trunk.blocks)
+        if self.return_interm_layers:
+            available_layers = tuple(vision_backbone.trunk.full_attn_ids)
+            self.sam3_intermediate_layers = tuple(
+                (cfg or {}).get("Sam3", {}).get(
+                    "sam3_intermediate_layers", available_layers
+                )
+            )
+            invalid_layers = [
+                layer
+                for layer in self.sam3_intermediate_layers
+                if layer not in available_layers
+            ]
+            if invalid_layers:
+                raise ValueError(
+                    f"SAM3 can return only global-attention layers "
+                    f"{list(available_layers)}, got {invalid_layers}."
+                )
+            self.sam3_feature_indices = tuple(
+                available_layers.index(layer)
+                for layer in self.sam3_intermediate_layers
+            )
+        else:
+            self.sam3_intermediate_layers = (num_blocks - 1,)
+            self.sam3_feature_indices = (0,)
+        self.num_feature_layers = len(self.sam3_feature_indices)
         self.feature_source = feature_source
 
     def forward(self,batch):
         img = getattr(batch, "sam3_img_batch", batch.img_batch).to(device=self.device, dtype=torch.float32)
         vision_backbone = self.model.backbone.vision_backbone
-        vision_backbone.trunk.return_interm_layers = True
+        vision_backbone.trunk.return_interm_layers = self.return_interm_layers
         vision_backbone.eval()
         with torch.inference_mode(), torch.autocast(
                 device_type=self.device.type,
@@ -308,13 +257,13 @@ class Sam3_feature_extractor(torch.nn.Module):
         ):
             if self.feature_source == "backbone":
                 return extract_distillation_features(
-                    vision_backbone, img, self.return_interm_layers
+                    vision_backbone, img, self.sam3_feature_indices
                 )
             if self.feature_source == "detector":
                 return extract_sam3_detector_features(vision_backbone, img)
             if self.feature_source == "both":
                 return extract_sam3_backbone_and_neck_features(
-                    vision_backbone, img, self.return_interm_layers
+                    vision_backbone, img, self.sam3_feature_indices
                 )
             raise ValueError(
                 "feature_source must be 'backbone', 'detector', or 'both', got "
@@ -334,9 +283,17 @@ class DINO_V2_feature_extractor(torch.nn.Module):
             weights_path=self.checkpoint,
             device=self.device,
         )
-        self.return_interm_layers = (cfg or {}).get(
-            "DINO_V2", {}
-        ).get("return_interm_layers")
+        len_blocks = len(self.model.blocks)
+        return_interm_layers = bool(
+            (cfg or {}).get("train", {}).get("return_interm_layers", False)
+        )
+        if return_interm_layers:
+            self.dino_v2_intermediate_layers = tuple((cfg or {}).get(
+                "DINO_V2", {}
+            ).get("dino_v2_intermediate_layers", (len_blocks - 1,)))
+        else:
+            self.dino_v2_intermediate_layers = (len_blocks - 1,)
+        self.num_feature_layers = len(self.dino_v2_intermediate_layers)
 
     #加载预训练模型
     def load_model(self,weights_path: str, device: torch.device):
@@ -349,6 +306,7 @@ class DINO_V2_feature_extractor(torch.nn.Module):
         if isinstance(state_dict, dict) and "model" in state_dict:
             state_dict = state_dict["model"]
         model.load_state_dict(state_dict, strict=True)
+        replace_dinov2_memory_efficient_attention(model)
         model.eval()
         model.to(device)
         return model
@@ -368,7 +326,7 @@ class DINO_V2_feature_extractor(torch.nn.Module):
         image_tensor = image_tensor.to(device=device, dtype=torch.float32)
         return model.get_intermediate_layers(
             image_tensor,
-            n=select_layer_indices(self.return_interm_layers, len(model.blocks)),
+            n=select_layer_indices(self.dino_v2_intermediate_layers, len(model.blocks)),
             reshape=True,
             return_class_token=True,
         )
@@ -399,12 +357,22 @@ class CLIP_feature_extractor(torch.nn.Module):
         self.device = device
         self.cfg = cfg or {}
         self.input_resolution = self.cfg.get("CLIP", {}).get("resolution", 224)
-        self.out_indices = self.cfg.get("CLIP", {}).get("out_indices")
+        self.return_interm_layers = bool(
+            self.cfg.get("train", {}).get("return_interm_layers", False)
+        )
         self.model = self.build_clip_model(
             model_path=self.checkpoint_path,
             device=self.device,
             input_resolution=self.input_resolution,
         )
+        len_blocks = len(self.model.visual.transformer.resblocks)
+        if self.return_interm_layers:
+            self.out_indices = tuple(self.cfg.get("CLIP", {}).get(
+                "clip_intermediate_layers", (len_blocks - 1,)
+            ))
+        else:
+            self.out_indices = (len_blocks - 1,)
+        self.num_feature_layers = len(self.out_indices)
 
     def build_clip_model(
             self,

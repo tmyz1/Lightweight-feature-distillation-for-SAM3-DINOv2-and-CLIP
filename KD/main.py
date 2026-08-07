@@ -29,22 +29,23 @@ from KD.build_dataloader import (
 )
 from KD.distill_model import Distill
 
-
+#下载配置文件
 def load_config(path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-
+#创建蒸馏模型
 def build_distiller(cfg: Dict[str, Any], device: torch.device):
     return Distill(cfg, device)
 
+#将数据全部放在cuda上
 def move_to_device(obj, device: torch.device, cfg: Dict[str, Any] = None):
     obj = copy_data_to_device(obj, device, non_blocking=True)
     if cfg is not None:
         obj = add_multi_resolution_batches(obj, cfg)#添加不同尺寸的分辨率
     return obj
 
-
+#定义随机种子
 def seed_everything(seed: int) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
@@ -94,7 +95,7 @@ def format_metrics(metrics: Dict[str, Any]) -> str:
             parts.append(f"{aliases[key]}={float(metrics[key]):.6f}")
     return " ".join(parts)
 
-#混合精度
+#精度转换
 def forward_with_amp(model: Distill, batch, cfg: Dict[str, Any]):
     with torch.autocast(
             device_type=model.device.type,
@@ -103,6 +104,16 @@ def forward_with_amp(model: Distill, batch, cfg: Dict[str, Any]):
             and model.device.type == "cuda",
     ):
         return model(batch)
+
+
+def forward_student_for_eval(model: Distill, batch, cfg: Dict[str, Any]):
+    with torch.autocast(
+            device_type=model.device.type,
+            dtype=torch.bfloat16,
+            enabled=bool(cfg.get("eval", {}).get("amp", False))
+            and model.device.type == "cuda",
+    ):
+        return model.Student.model(batch)
 
 
 def build_optimizer(model: Distill, cfg: Dict[str, Any]):
@@ -286,7 +297,7 @@ def evaluate(model: Distill, cfg: Dict[str, Any], step: int):
         batch = move_to_device(batch, model.device, cfg)
         batch = use_student_resolution(batch)
         with contextlib.redirect_stdout(io.StringIO()):
-            outputs = model.Student.model(batch)
+            outputs = forward_student_for_eval(model, batch, cfg)
         dumper.update(find_stages=outputs, find_metadatas=batch.find_metadatas)
 
     metrics = dumper.compute_synced()
