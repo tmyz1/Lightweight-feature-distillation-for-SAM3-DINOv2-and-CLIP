@@ -27,6 +27,7 @@ from sam3.train.transforms.basic_for_api import (
     PadToSizeAPI,
     RandomResizeAPI,
     ToTensorAPI,
+    pad,
 )
 from sam3.train.transforms.filter_query_transforms import (
     FilterCrowds,
@@ -47,6 +48,27 @@ def resize_img_batch(img_batch: torch.Tensor, resolution: int) -> torch.Tensor:
         align_corners=False,
     )
 
+
+class PadToSizeWithValidRegionAPI(PadToSizeAPI):
+    """Pad images while retaining the pre-padding content box for KD losses."""
+
+    def __call__(self, datapoint, **kwargs):
+        for index, image in enumerate(datapoint.images):
+            width, height = image.data.size
+            if self.bottom_right:
+                padding = (self.size - width, self.size - height)
+                left = top = 0
+            else:
+                padding = self._sample_pad(width, height)
+                left, top = padding[:2]
+
+            image.kd_valid_box = torch.tensor(
+                [left, top, left + width, top + height], dtype=torch.float32
+            )
+            datapoint = pad(datapoint, index, padding, v2=self.v2)
+        return datapoint
+
+
 #针对不同的模型采用不同的分辨率
 def add_multi_resolution_batches(batch, cfg: Dict[str, Any]):
     dataset_cfg = cfg["dataset"]
@@ -65,12 +87,29 @@ def add_multi_resolution_batches(batch, cfg: Dict[str, Any]):
 
 
 def collate_kd_batch(batch, cfg: Dict[str, Any], enable_segmentation: bool):
+    valid_boxes = []
+    for datapoint in batch:
+        for image in datapoint.images:
+            valid_box = getattr(image, "kd_valid_box", None)
+            if valid_box is None:
+                height, width = image.size
+                valid_box = torch.tensor(
+                    [0, 0, width, height], dtype=torch.float32
+                )
+            valid_boxes.append(valid_box)
+
     batched = collate_fn_api(
         batch,
         dict_key="all",
         with_seg_masks=enable_segmentation,
         repeats=1,
     )["all"]
+    canvas_height, canvas_width = batched.img_batch.shape[-2:]
+    canvas_scale = torch.tensor(
+        [canvas_width, canvas_height, canvas_width, canvas_height],
+        dtype=torch.float32,
+    )
+    batched.kd_valid_boxes = torch.stack(valid_boxes) / canvas_scale
     return add_multi_resolution_batches(batched, cfg)
 
 
@@ -90,7 +129,9 @@ def build_transforms(resolution: int, max_ann_per_img: int = 200):
                     square=True,
                     consistent_transform=False,
                 ),
-                PadToSizeAPI(size=resolution, consistent_transform=False),
+                PadToSizeWithValidRegionAPI(
+                    size=resolution, consistent_transform=False
+                ),
                 ToTensorAPI(),
                 FlexibleFilterFindGetQueries(query_filter=FilterEmptyTargets()),
                 NormalizeAPI(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
@@ -138,9 +179,16 @@ def resolve_split_paths(root: Path, split: str) -> tuple[Path, Path]:
             f"Cannot find image folder for split={split!r}. Checked: {candidates}"
         )
 
+    local_instance_annotations = tuple(sorted(image_folder.glob("instances_*.json")))
+    local_json_annotations = tuple(sorted(image_folder.glob("*.json")))
+    unique_local_json = (
+        local_json_annotations if len(local_json_annotations) == 1 else ()
+    )
     annotation_candidates = (
         image_folder / "_annotations.coco.json",
         image_folder / f"instances_{split}.json",
+        *local_instance_annotations,
+        *unique_local_json,
         root / "annotations" / f"instances_{split}.json",
         root / "annotations_trainval2017" / "annotations" / f"instances_{split}.json",
     )
@@ -155,13 +203,16 @@ def resolve_split_paths(root: Path, split: str) -> tuple[Path, Path]:
     return image_folder, ann_file
 
 
-def limit_validation_dataset_to_images(
+def limit_dataset_to_images(
     dataset: Sam3ImageDataset,
     num_images: int,
+    split_name: str,
 ) -> None:
-    """Limit validation by source images while retaining every category chunk."""
+    """Limit a dataset by source images while retaining every category chunk."""
     if num_images < 1:
-        raise ValueError("dataset.val_num_images must be at least 1 when specified.")
+        raise ValueError(
+            f"dataset.{split_name}_num_images must be at least 1 when specified."
+        )
 
     num_source_images = len(dataset.coco._raw_data)
     num_category_chunks = len(dataset.coco.category_chunks)
@@ -177,7 +228,7 @@ def limit_validation_dataset_to_images(
     ).reshape(-1)
     dataset.repeat_factors = torch.ones(len(dataset.ids), dtype=torch.float32)
     print(
-        "Validation dataset limited to "
+        f"{split_name.capitalize()} dataset limited to "
         f"{selected_count} source image(s), {len(dataset.ids)} datapoint(s)."
     )
 
@@ -205,11 +256,14 @@ def build_split_dataloader(
     resolution = int(dataset_cfg.get("resolution", 1008))
     enable_segmentation = bool(dataset_cfg.get("enable_segmentation", False))
     eval_category_chunk_size = int(dataset_cfg.get("eval_category_chunk_size", 2))
+    max_objects_per_query = int(dataset_cfg.get("max_objects_per_query", 200))
     if eval_category_chunk_size < 1:
         raise ValueError("dataset.eval_category_chunk_size must be at least 1.")
+    if max_objects_per_query < 1:
+        raise ValueError("dataset.max_objects_per_query must be at least 1.")
 
     transforms = (
-        build_transforms(resolution, max_ann_per_img=200)
+        build_transforms(resolution, max_ann_per_img=max_objects_per_query)
         if training
         else build_val_transforms(resolution)
     )
@@ -234,10 +288,14 @@ def build_split_dataloader(
                 category_chunk_size=eval_category_chunk_size,
             )
         ),
-        limit_ids=limit_ids if training else None,
+        limit_ids=None,
     )
-    if not training and limit_ids is not None:
-        limit_validation_dataset_to_images(dataset, int(limit_ids))
+    if limit_ids is not None:
+        limit_dataset_to_images(
+            dataset,
+            int(limit_ids),
+            "train" if training else "val",
+        )
 
     return DataLoader(
         dataset,
@@ -256,7 +314,7 @@ def build_dataloader(cfg: Dict[str, Any]) -> DataLoader:
         cfg,
         split=dataset_cfg.get("train_split", "train"),
         training=True,
-        limit_ids=dataset_cfg.get("num_images"),
+        limit_ids=dataset_cfg.get("train_num_images", 1000),
         shuffle=True,
         drop_last=True,
     )

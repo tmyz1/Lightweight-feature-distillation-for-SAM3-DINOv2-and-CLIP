@@ -1,3 +1,4 @@
+import sys
 from copy import deepcopy
 from typing import Optional, Dict, Any, Sequence, Tuple, List
 
@@ -144,6 +145,8 @@ class Sam3SwinFPNDetNeck(nn.Module):
             nn.Conv2d(d_model, d_model, kernel_size=3, padding=1, bias=True),
         )
         self.output_convs = nn.ModuleList()
+
+        #和sam3相同的sample FPN
         for scale in self.scale_factors:
             current = nn.Sequential()
             if scale == 4.0:
@@ -254,7 +257,7 @@ class Sam3SwinFPNDetNeck(nn.Module):
             pan.append(top_down[i] + down)
         pan = [conv(feature) for conv, feature in zip(bottom_up_convs, pan)]
 
-        vit_like = pan[0]
+        vit_like = pan[-1]
         if vit_like.shape[-2:] != self.vit_feature_size:
             vit_like = F.interpolate(
                 vit_like,

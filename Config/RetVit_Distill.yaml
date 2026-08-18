@@ -1,11 +1,11 @@
-device: "cuda"
+﻿device: "cuda"
 
 dataset:
   root: "E:/my_data/COCO"
   train_split: "train2017"
   val_split: "val2017"
   eval_category_chunk_size: 2
-  train_num_images: 1000
+  train_num_images: null #null表示训练所有的数据
   val_num_images: 100
   resolution: 1008
   num_workers: 0
@@ -13,65 +13,44 @@ dataset:
   enable_segmentation: false
 
 Student:
-  kd_resolution: 384
+  model: "repvit"
+  kd_resolution: 1008
   position_encoding_resolution: 1008
-  swin_backbone:
-    pretrain_img_size: 384
-    in_chans: 3
-    embed_dim: 192
-    patch_size: 4
-    window_size: 12
-    mlp_ratio: 4.0
-    depths: [2, 2, 18, 2]
-    num_heads: [6, 12, 24, 48]
-    strides: [4, 2, 2, 2]
-    out_indices: [0, 1, 2, 3]
-    qkv_bias: true
-    qk_scale: null
-    patch_norm: true
-    drop_rate: 0.0
-    attn_drop_rate: 0.0
-    drop_path_rate: 0.1
-    use_abs_pos_embed: false
-    norm_layer: "LayerNorm"
-    act_layer: "GELU"
-    use_act_checkpoint: false
-    frozen_stages: -1
-    pretrained: "E:/reproduce/weights/SwinTransformer/swin_large_384.pth"
-  swin_neck:
+  repvit_checkpoint_path: "E:/reproduce/weights/RepVit/repvit_m1_1_distill_450e.pth"
+  repvit_arch: "m1_1"
+  strict_pretrained: false
+  repvit_neck:
     d_model: 256
-    in_channels: null
-    target_sizes:
-      - [288, 288]
-      - [144, 144]
-      - [72, 72]
-      - [36, 36]
+    vit_feature_size: [72, 72]
+    scale_factors: [4.0, 2.0, 1.0, 0.5]
 
 Sam3:
   checkpoint_path: "E:/reproduce/weights/sam3/sam3.pt"
   bpe_path: "E:/pycharm/sam3-main/sam3-main/sam3-main/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
   device: "cuda"
   enable_segmentation: false
+  sam3_intermediate_layers: [7，15，23，31]
 
 CLIP:
   checkpoint_path: "E:/reproduce/weights/CLIP/ViT-L-14.pt"
   bpe_path: "E:/pycharm/sam3-main/sam3-main/sam3-main/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
   device: "cuda"
   resolution: 224
-  out_indices: [23]
+  clip_intermediate_layers: [5，11，17，23]
 
 DINO_V2:
   checkpoint: "E:/reproduce/weights/DINO-V2/dinov2_vitl14_reg4_pretrain.pth"
   bpe_path: "E:/pycharm/sam3-main/sam3-main/sam3-main/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
   device: "cuda"
   resolution: 224
-  return_interm_layers: [23]
+  dino_v2_intermediate_layers: [5，11，17，23]
 
 Adapter:
   student_channel: [256]
+  student_cls_channel: [256]
   teacher_channel: [1024]
   target_sizes:
-    - [ 72, 72 ]
+    - [72, 72]
 
 optim:
   min_lr: 1.0e-6
@@ -96,31 +75,26 @@ loss:
   sam3_features_weight: 1.0
   dino_v2_features_weight: 0.15
   clip_features_weight: 0.15
-
-  losses_type: ['cosine','smooth_l1']
-
+  losses_type: ["cosine", "smooth_l1"]
   features_loss:
     cosine: 0.5
     smooth_l1: 0.5
-
   cls_token_loss:
     cosine: 0.5
     smooth_l1: 0.5
 
 train:
-  max_steps: 5
+  max_steps: 10
   eval_every_steps: 1
-  log_every_batches: 50
+  log_every_batches: 20
   amp: true
   seed: 123
+  return_interm_layers: false
 
 eval:
   enabled: true
-  amp: false
+  amp: true
   max_dets: 100
-  log_every_batches: 50
-  output_dir: "KD/eval_outputs"
-
-
-
+  log_every_batches: 20
+  output_dir: "KD/eval_outputs/repvit"
 

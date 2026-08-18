@@ -1,12 +1,13 @@
 device: "cuda"
 
 dataset:
-  root: "E:/my_data/COCO"
-  train_split: "train2017"
+  root: "F:/data/SA-1B/SA-Small"
+  train_split: "SA-train"
   val_split: "val2017"
   eval_category_chunk_size: 2
-  num_images: null
+  train_num_images: null
   val_num_images: 100
+  max_objects_per_query: 800
   resolution: 1008
   num_workers: 0
   batch_size: 4
@@ -27,6 +28,7 @@ Sam3:
   sam3_intermediate_layers: [7,15,23,31]
 
 CLIP:
+  is_use: False
   checkpoint_path: "E:/reproduce/weights/CLIP/ViT-L-14.pt"
   bpe_path: "E:/pycharm/sam3-main/sam3-main/sam3-main/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
   device: "cuda"
@@ -34,6 +36,7 @@ CLIP:
   clip_intermediate_layers: [5,11,17,23]
 
 DINO_V2:
+  is_use: False
   checkpoint: "E:/reproduce/weights/DINO-V2/dinov2_vitl14_reg4_pretrain.pth"
   bpe_path: "E:/pycharm/sam3-main/sam3-main/sam3-main/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
   device: "cuda"
@@ -62,6 +65,7 @@ param_scheduler:
   min_lr: 1.0e-6
 
 loss:
+  mask_sam3_padding: true
   features_loss_weight: 0.35
   necks_loss_weight: 0.50
   cls_tokens_loss_weight: 0.15

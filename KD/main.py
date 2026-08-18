@@ -40,7 +40,10 @@ def build_distiller(cfg: Dict[str, Any], device: torch.device):
 
 #将数据全部放在cuda上
 def move_to_device(obj, device: torch.device, cfg: Dict[str, Any] = None):
+    valid_boxes = getattr(obj, "kd_valid_boxes", None)
     obj = copy_data_to_device(obj, device, non_blocking=True)
+    if valid_boxes is not None:
+        obj.kd_valid_boxes = valid_boxes.to(device=device, non_blocking=True)
     if cfg is not None:
         obj = add_multi_resolution_batches(obj, cfg)#添加不同尺寸的分辨率
     return obj
@@ -382,6 +385,7 @@ if __name__ == "__main__":
         raise RuntimeError("CUDA is required for this training run.")
 
     #构建数据集
+    print(f'begin building dataloader')
     dataloader = build_dataloader(cfg)
     print(f"dataloader built: batches={len(dataloader)}")
 
