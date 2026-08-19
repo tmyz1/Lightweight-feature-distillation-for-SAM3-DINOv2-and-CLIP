@@ -347,7 +347,11 @@ def build_vit_small_image_model(
     vit_small_checkpoint_path = student_cfg.get(
         "vit_small_checkpoint_path", vit_small_checkpoint_path
     )
-    image_size = int(student_cfg.get("kd_resolution", 518))
+    # Keep the learned ViT position table at its pretrained grid. The trunk
+    # interpolates it at runtime when kd_resolution uses a different size.
+    pos_embed_image_size = int(
+        student_cfg.get("vit_small_pos_embed_resolution", 518)
+    )
     position_encoding_resolution = int(
         student_cfg.get("position_encoding_resolution", 1008)
     )
@@ -361,7 +365,7 @@ def build_vit_small_image_model(
         vit_small_checkpoint_path=vit_small_checkpoint_path,
         vit_small_intermediate_layers=vit_small_intermediate_layers,
         return_interm_layers = return_interm_layers,
-        image_size=image_size,
+        image_size=pos_embed_image_size,
         position_encoding_resolution=position_encoding_resolution,
     )
     if compile_mode is not None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import random
+import secrets
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict
@@ -36,6 +37,7 @@ from sam3.train.transforms.filter_query_transforms import (
     FlexibleFilterFindGetQueries,
 )
 from sam3.train.transforms.point_sampling import RandomizeInputBbox
+from sam3.train.transforms.segmentation import DecodeRle
 
 
 def resize_img_batch(img_batch: torch.Tensor, resolution: int) -> torch.Tensor:
@@ -118,6 +120,7 @@ def build_transforms(resolution: int, max_ann_per_img: int = 200):
         ComposeAPI(
             transforms=[
                 FlexibleFilterFindGetQueries(query_filter=FilterCrowds()),
+                DecodeRle(),
                 RandomizeInputBbox(box_noise_std=0.1, box_noise_max=20),
                 RandomResizeAPI(
                     sizes=get_random_resize_scales(
@@ -150,6 +153,7 @@ def build_val_transforms(resolution: int):
     return [
         ComposeAPI(
             transforms=[
+                DecodeRle(),
                 RandomResizeAPI(
                     sizes=resolution,
                     max_size=get_random_resize_max_size(size=resolution),
@@ -207,6 +211,7 @@ def limit_dataset_to_images(
     dataset: Sam3ImageDataset,
     num_images: int,
     split_name: str,
+    subset_seed: int,
 ) -> None:
     """Limit a dataset by source images while retaining every category chunk."""
     if num_images < 1:
@@ -218,7 +223,7 @@ def limit_dataset_to_images(
     num_category_chunks = len(dataset.coco.category_chunks)
     selected_count = min(num_images, num_source_images)
     source_indices = list(range(num_source_images))
-    random.Random(num_source_images).shuffle(source_indices)
+    random.Random(subset_seed).shuffle(source_indices)
     source_indices = sorted(source_indices[:selected_count])
 
     chunk_offsets = torch.arange(num_category_chunks, dtype=torch.long)
@@ -229,7 +234,8 @@ def limit_dataset_to_images(
     dataset.repeat_factors = torch.ones(len(dataset.ids), dtype=torch.float32)
     print(
         f"{split_name.capitalize()} dataset limited to "
-        f"{selected_count} source image(s), {len(dataset.ids)} datapoint(s)."
+        f"{selected_count} source image(s), {len(dataset.ids)} datapoint(s), "
+        f"subset_seed={subset_seed}."
     )
 
 
@@ -291,10 +297,22 @@ def build_split_dataloader(
         limit_ids=None,
     )
     if limit_ids is not None:
+        if training:
+            configured_seed = dataset_cfg.get("train_subset_seed")
+            subset_seed = (
+                int(configured_seed)
+                if configured_seed is not None
+                else secrets.randbits(63)
+            )
+        else:
+            subset_seed = int(
+                dataset_cfg.get("val_subset_seed", len(dataset.coco._raw_data))
+            )
         limit_dataset_to_images(
             dataset,
             int(limit_ids),
             "train" if training else "val",
+            subset_seed,
         )
 
     return DataLoader(

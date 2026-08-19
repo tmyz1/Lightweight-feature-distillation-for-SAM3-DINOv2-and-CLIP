@@ -322,9 +322,21 @@ def save_checkpoint(
     best_map: float,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    distillation_adapters = {
+        name: getattr(model, name).state_dict()
+        for name in (
+            "sam3_adapter",
+            "Dino_v2_adapter",
+            "CLIP_adapter",
+            "Dino_v2_cls_adapter",
+            "CLIP_cls_adapter",
+        )
+        if hasattr(model, name)
+    }
     torch.save(
         {
             "student_model": model.Student.model.state_dict(),
+            "distillation_adapters": distillation_adapters,
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "scaler": scaler.state_dict(),
@@ -338,6 +350,13 @@ def save_checkpoint(
     print(f"[checkpoint] saved: {path}", flush=True)
 
 
+def save_student_model(path: Path, model: Distill) -> None:
+    """Save the deployable student without teachers, adapters, or optimizer state."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(model.Student.model.state_dict(), path)
+    print(f"[student] saved: {path}", flush=True)
+
+
 def load_checkpoint(
     path: Path,
     model: Distill,
@@ -346,7 +365,27 @@ def load_checkpoint(
     scaler,
 ) -> Dict[str, Any]:
     checkpoint = torch.load(path, map_location=model.device, weights_only=False)
+    if "student_model" not in checkpoint:
+        raise ValueError(
+            f"{path} is a student-only weight file. "
+            "Use a *_distillation.pt checkpoint with --resume."
+        )
     model.Student.model.load_state_dict(checkpoint["student_model"], strict=True)
+    distillation_adapters = checkpoint.get("distillation_adapters")
+    if distillation_adapters is None:
+        print(
+            "[checkpoint] warning: legacy checkpoint has no distillation adapter "
+            "state; adapters keep their newly initialized weights.",
+            flush=True,
+        )
+    else:
+        for name, state_dict in distillation_adapters.items():
+            if not hasattr(model, name):
+                raise ValueError(
+                    f"Checkpoint contains adapter {name!r}, but the current "
+                    "distillation configuration does not create it."
+                )
+            getattr(model, name).load_state_dict(state_dict, strict=True)
     optimizer.load_state_dict(checkpoint["optimizer"])
     scheduler.load_state_dict(checkpoint["scheduler"])
     scaler.load_state_dict(checkpoint["scaler"])
@@ -372,7 +411,7 @@ if __name__ == "__main__":
         help="output directory",
     )
     parser.add_argument("--max-steps", type=int, default=None)
-    parser.add_argument("--resume", type=str, default=None)
+    parser.add_argument("--resume", type=str, default=r"E:\reproduce\weights\sam3 distill\vit_small_patch14_reg4_dinov2 distill\latest_distillation.pt")
     parser.add_argument("--eval-only", action="store_true")
     args = parser.parse_args()
     cfg = load_config(args.config)
@@ -472,7 +511,7 @@ if __name__ == "__main__":
             if current_map > best_map:
                 best_map = current_map
                 save_checkpoint(
-                    output_dir / "best_student.pt",
+                    output_dir / "best_distillation.pt",
                     model,
                     optimizer,
                     scheduler,
@@ -482,9 +521,10 @@ if __name__ == "__main__":
                     global_update,
                     best_map,
                 )
+                save_student_model(output_dir / "best_student.pt", model)
 
         save_checkpoint(
-            output_dir / "latest_student.pt",
+            output_dir / "latest_distillation.pt",
             model,
             optimizer,
             scheduler,
@@ -494,3 +534,4 @@ if __name__ == "__main__":
             global_update,
             best_map,
         )
+        save_student_model(output_dir / "latest_student.pt", model)

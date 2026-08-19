@@ -46,78 +46,49 @@ def build_feature_valid_masks(
         for feature in features
     ]
 
-
-def warp_feature_to_valid_region(
-        student_feature: torch.Tensor,
-        teacher_feature: torch.Tensor,
-        student_valid_boxes: torch.Tensor,
-        teacher_valid_boxes: torch.Tensor,
-) -> torch.Tensor:
-    """Warp a student's valid feature region into the teacher's canvas coordinates."""
-    if student_feature.shape[0] != teacher_feature.shape[0]:
-        raise ValueError("Student and teacher feature batches must have the same size.")
-
-    student_feature = student_feature.float()
-    _, _, _, _ = student_feature.shape
-    target_height, target_width = teacher_feature.shape[-2:]
-    device = student_feature.device
-    dtype = student_feature.dtype
-    student_boxes = student_valid_boxes.to(device=device, dtype=dtype)
-    teacher_boxes = teacher_valid_boxes.to(device=device, dtype=dtype)
-
-    target_x = (
-        (torch.arange(target_width, device=device, dtype=dtype) + 0.5)
-        / target_width
-    )
-    target_y = (
-        (torch.arange(target_height, device=device, dtype=dtype) + 0.5)
-        / target_height
-    )
-    student_left, student_top, student_right, student_bottom = student_boxes.unbind(1)
-    teacher_left, teacher_top, teacher_right, teacher_bottom = teacher_boxes.unbind(1)
-    target_widths = (teacher_right - teacher_left).clamp_min(torch.finfo(dtype).eps)
-    target_heights = (teacher_bottom - teacher_top).clamp_min(torch.finfo(dtype).eps)
-
-    u = (target_x[None, :] - teacher_left[:, None]) / target_widths[:, None]
-    v = (target_y[None, :] - teacher_top[:, None]) / target_heights[:, None]
-    source_x = student_left[:, None] + u * (student_right - student_left)[:, None]
-    source_y = student_top[:, None] + v * (student_bottom - student_top)[:, None]
-    grid_x = source_x[:, None, :].expand(-1, target_height, -1) * 2 - 1
-    grid_y = source_y[:, :, None].expand(-1, -1, target_width) * 2 - 1
-    grid = torch.stack((grid_x, grid_y), dim=-1)
-
-    warped = F.grid_sample(
-        student_feature,
-        grid,
-        mode="bilinear",
-        padding_mode="zeros",
-        align_corners=False,
-    )
-    target_mask = strict_valid_region_mask(
-        teacher_boxes, (target_height, target_width)
-    ).to(dtype=warped.dtype)
-    return warped * target_mask
-
-
-def warp_feature_list_to_teacher_regions(
+"""
+逐像素的特征mse损失计算
+"""
+def pixel_wise_mse_features_loss(
         student_features: Sequence[torch.Tensor],
         teacher_features: Sequence[torch.Tensor],
-        student_valid_boxes: torch.Tensor,
-        teacher_valid_boxes: torch.Tensor,
-) -> list[torch.Tensor]:
+        valid_masks: Optional[Sequence[torch.Tensor]] = None,
+        avg: bool = True,
+) -> torch.Tensor:
+    """Compute MSE on valid feature cells and give every image equal weight."""
     if len(student_features) != len(teacher_features):
         raise ValueError(
             "Student and teacher feature lists must have the same number of layers."
         )
-    return [
-        warp_feature_to_valid_region(
-            student_feature,
-            teacher_feature,
-            student_valid_boxes,
-            teacher_valid_boxes,
+
+    if valid_masks is not None and len(valid_masks) != len(student_features):
+        raise ValueError("valid_masks must match the number of feature layers.")
+    layer_losses = []
+    for index, (student_feature, teacher_feature) in enumerate(
+            zip(student_features, teacher_features)
+    ):
+        if student_feature.shape != teacher_feature.shape:
+            raise ValueError(
+                f"student feature {tuple(student_feature.shape)} does not match "
+                f"teacher feature {tuple(teacher_feature.shape)}."
+            )
+
+        per_pixel_mse = (student_feature.float() - teacher_feature.float()).square()
+        per_pixel_mse = per_pixel_mse.mean(dim=1)
+        valid_mask = None if valid_masks is None else valid_masks[index]
+        if valid_mask is None:
+            layer_losses.append(per_pixel_mse.mean())
+            continue
+
+        valid_mask = valid_mask[:, 0].to(
+            device=per_pixel_mse.device, dtype=per_pixel_mse.dtype
         )
-        for student_feature, teacher_feature in zip(student_features, teacher_features)
-    ]
+        per_image_loss = (per_pixel_mse * valid_mask).flatten(1).sum(dim=1)
+        per_image_loss = per_image_loss / valid_mask.flatten(1).sum(dim=1).clamp_min(1)
+        layer_losses.append(per_image_loss.mean())
+
+    total_loss = torch.stack(layer_losses).sum()
+    return total_loss / len(layer_losses) if avg else total_loss
 
 def student_and_teacher_features_loss(
         student_features: List,
@@ -130,7 +101,7 @@ def student_and_teacher_features_loss(
     用于计算学生网络和教师网络在特征层面上的损失
     student_feature: 学生网络特征
     teacher_feature: 教师网络特征
-    loss_type: 采用什么类型的方法来计算损失函数[cosine,L1,L2,SmoothL1]
+    loss_type: 采用什么类型的方法来计算损失函数[cosine,L1,L2,SmoothL1,MSE]
     avg:在计算完成每一层的损失之后是采用每层的损失相加还是平均,True表示相加
     vaild_masks: mask用来表示哪一些部分包含了图像的padding
     """
@@ -139,6 +110,14 @@ def student_and_teacher_features_loss(
 
     if valid_masks is not None and len(valid_masks) != len(student_features):
         raise ValueError("valid_masks must match the number of feature layers.")
+
+    if loss_type == 'mse':
+        return pixel_wise_mse_features_loss(
+            student_features,
+            teacher_features,
+            valid_masks=valid_masks,
+            avg=avg,
+        )
 
     losses = 0
 
@@ -260,7 +239,7 @@ def features_total_loss(
     用于计算不同方法下得到的损失值，传入的losses_type是List类型，最后返回Dict类型
     student_feature: 学生网络特征
     teacher_feature: 教师网络特征
-    losses_type: 采用那些类型的方法来计算损失函数，目前只定义了[cosine,L1,L2,SmoothL1]四类
+    losses_type: 采用那些类型的方法来计算损失函数，目前定义了[cosine,L1,L2,SmoothL1,MSE]五类
     cfg:配置文件，用于取配置文件中各个不同方法的权重系数
     avg:在计算完成每一层的损失之后是采用每层的损失相加还是平均,True表示相加
     """

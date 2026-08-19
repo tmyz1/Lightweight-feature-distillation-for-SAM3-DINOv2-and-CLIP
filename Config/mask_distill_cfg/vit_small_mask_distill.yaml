@@ -1,0 +1,78 @@
+device: "cuda"
+
+dataset:
+  root: "E:/my_data/COCO"
+  train_split: "train2017"
+  val_split: "val2017"
+  train_num_images: 5000
+  val_num_images: 100
+  train_subset_seed: 123
+  val_subset_seed: 123
+  eval_category_chunk_size: 1000
+  max_objects_per_query: 200
+  resolution: 1008
+  batch_size: 1
+  num_workers: 0
+  enable_segmentation: true
+
+Sam3:
+  checkpoint_path: "E:/reproduce/weights/sam3/sam3.pt"
+  bpe_path: "E:/pycharm/Vision Distillation/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
+  resolution: 1008
+  enable_segmentation: true
+
+Student:
+  model: "vit_small"
+  kd_resolution: 1008
+  vit_small_pos_embed_resolution: 518
+  position_encoding_resolution: 1008
+  vit_small_checkpoint_path: "E:/reproduce/weights/DINO-V2/vit_small_patch14_reg4_dinov2.safetensors"
+  initial_checkpoint: "E:/reproduce/weights/sam3 distill/vit_small_patch14_reg4_dinov2 distill/best_student.pt"
+  vit_small_intermediate_layers: [2, 5, 8, 11]
+
+mask_distill:
+  prompt_types: ["point", "box"]
+  point_sampling: "random"
+  max_prompts_per_batch: 2
+  trainable_modules:
+    - "geometry_encoder"
+    - "transformer.decoder"
+    - "segmentation_head"
+    - "dot_prod_scoring"
+
+loss:
+  temperature: 1.0
+  mask_bce_weight: 1.0
+  mask_focal_weight: 0.0
+  mask_dice_weight: 1.0
+  score_mse_weight: 0.1
+  query_mse_weight: 0.1
+  focal_alpha: 0.25
+  focal_gamma: 2.0
+
+optim:
+  lr: 1.0e-5
+  min_lr: 1.0e-6
+  betas: [0.9, 0.999]
+  weight_decay: 0.05
+  max_grad_norm: 1.0
+
+param_scheduler:
+  warmup_updates: 100
+  warmup_start_factor: 0.1
+  min_lr: 1.0e-6
+
+train:
+  epochs: 20
+  max_train_batches: 0
+  accumulation_steps: 1
+  eval_every_epochs: 1
+  log_every_batches: 10
+  amp: true
+  seed: 123
+
+eval:
+  enabled: true
+  prompt_types: ["point", "box"]
+  max_batches: 0
+  log_every_batches: 10

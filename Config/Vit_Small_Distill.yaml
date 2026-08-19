@@ -4,8 +4,8 @@ dataset:
   root: "F:/data/SA-1B/SA-Small"
   train_split: "SA-train"
   val_split: "val2017"
-  eval_category_chunk_size: 2
-  train_num_images: null
+  eval_category_chunk_size: 1
+  train_num_images: 10000
   val_num_images: 100
   max_objects_per_query: 800
   resolution: 1008
@@ -15,7 +15,8 @@ dataset:
 
 Student:
   model: "vit_small"
-  kd_resolution: 518
+  kd_resolution: 1008
+  vit_small_pos_embed_resolution: 518
   position_encoding_resolution: 1008
   vit_small_checkpoint_path: "E:/reproduce/weights/DINO-V2/vit_small_patch14_reg4_dinov2.safetensors"
   vit_small_intermediate_layers: [2, 5, 8, 11]
@@ -25,6 +26,7 @@ Sam3:
   bpe_path: "E:/pycharm/sam3-main/sam3-main/sam3-main/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
   device: "cuda"
   enable_segmentation: false
+  resolution: 1008
   sam3_intermediate_layers: [7,15,23,31]
 
 CLIP:
@@ -66,28 +68,29 @@ param_scheduler:
 
 loss:
   mask_sam3_padding: true
-  features_loss_weight: 0.35
-  necks_loss_weight: 0.50
-  cls_tokens_loss_weight: 0.15
+  features_loss_weight: 0.50
+  necks_loss_weight: 0.40
+  cls_tokens_loss_weight: 0.10
   normalize_features: true
   sam3_features_weight: 1.0
   dino_v2_features_weight: 0.15
   clip_features_weight: 0.15
-  losses_type: ["cosine", "smooth_l1"]
+  losses_type: ["cosine", "mse"]
+  cls_losses_type: ["cosine", "smooth_l1"]
   features_loss:
-    cosine: 0.5
-    smooth_l1: 0.5
+    cosine: 0.1
+    mse: 0.9
   cls_token_loss:
     cosine: 0.5
     smooth_l1: 0.5
 
 train:
-  max_steps: 10
+  max_steps: 80
   eval_every_steps: 1
   log_every_batches: 50
   amp: true
   seed: 123
-  return_interm_layers: True
+  return_interm_layers: False
 
 eval:
   enabled: true
