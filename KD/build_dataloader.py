@@ -239,6 +239,12 @@ def limit_dataset_to_images(
     )
 
 
+def get_subset_seed(dataset_cfg: Dict[str, Any], split_name: str) -> int:
+    """Use an optional fixed seed or generate a fresh seed for a dataset subset."""
+    configured_seed = dataset_cfg.get(f"{split_name}_subset_seed")
+    return int(configured_seed) if configured_seed is not None else secrets.randbits(63)
+
+
 def get_selected_coco_image_ids(dataset: Sam3ImageDataset) -> list[int]:
     """Return original COCO image ids represented by the current dataset ids."""
     num_category_chunks = len(dataset.coco.category_chunks)
@@ -297,21 +303,12 @@ def build_split_dataloader(
         limit_ids=None,
     )
     if limit_ids is not None:
-        if training:
-            configured_seed = dataset_cfg.get("train_subset_seed")
-            subset_seed = (
-                int(configured_seed)
-                if configured_seed is not None
-                else secrets.randbits(63)
-            )
-        else:
-            subset_seed = int(
-                dataset_cfg.get("val_subset_seed", len(dataset.coco._raw_data))
-            )
+        split_name = "train" if training else "val"
+        subset_seed = get_subset_seed(dataset_cfg, split_name)
         limit_dataset_to_images(
             dataset,
             int(limit_ids),
-            "train" if training else "val",
+            split_name,
             subset_seed,
         )
 

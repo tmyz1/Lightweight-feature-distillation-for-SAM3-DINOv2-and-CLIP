@@ -665,9 +665,7 @@ class RepVit_feature_extractor(nn.Module):
             checkpoint_path=self.cfg.get("Sam3", {}).get("checkpoint_path"),
             device=str(self.device),
             eval_mode=False,
-            enable_segmentation=bool(
-                self.cfg.get("Sam3", {}).get("enable_segmentation", False)
-            ),
+            enable_segmentation=bool(student_cfg.get("enable_segmentation", True)),
             enable_inst_interactivity=False,
             repvit_checkpoint_path=student_cfg.get("repvit_checkpoint_path"),
             repvit_neck_cfg=student_cfg.get("repvit_neck"),
@@ -710,7 +708,6 @@ class RepVit_feature_extractor(nn.Module):
             self.model.backbone.vision_backbone,
             img,
         )
-
 
 
 

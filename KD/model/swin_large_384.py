@@ -477,7 +477,9 @@ class Swin_Sam3_feature_extractor(nn.Module):
             checkpoint_path=self.cfg.get("Sam3", {}).get("checkpoint_path"),
             device=str(self.device),
             eval_mode=False,
-            enable_segmentation=bool(self.cfg.get("Sam3", {}).get("enable_segmentation", False)),
+            enable_segmentation=bool(
+                self.cfg.get("Student", {}).get("enable_segmentation", True)
+            ),
             enable_inst_interactivity=False,
             swin_backbone_cfg=self.cfg.get("Student", {}).get("swin_backbone"),
             swin_neck_cfg=self.cfg.get("Student", {}).get("swin_neck"),

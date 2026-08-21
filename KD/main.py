@@ -353,8 +353,21 @@ def save_checkpoint(
 def save_student_model(path: Path, model: Distill) -> None:
     """Save the deployable student without teachers, adapters, or optimizer state."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.Student.model.state_dict(), path)
-    print(f"[student] saved: {path}", flush=True)
+    student_state = model.Student.model.state_dict()
+    segmentation_keys = [
+        key for key in student_state if key.startswith("segmentation_head.")
+    ]
+    if not segmentation_keys:
+        raise RuntimeError(
+            "Student checkpoint has no segmentation_head parameters. Set "
+            "Student.enable_segmentation to true before training."
+        )
+    torch.save(student_state, path)
+    print(
+        f"[student] saved: {path} "
+        f"(segmentation parameters={len(segmentation_keys)})",
+        flush=True,
+    )
 
 
 def load_checkpoint(
@@ -370,7 +383,24 @@ def load_checkpoint(
             f"{path} is a student-only weight file. "
             "Use a *_distillation.pt checkpoint with --resume."
         )
-    model.Student.model.load_state_dict(checkpoint["student_model"], strict=True)
+    missing_keys, unexpected_keys = model.Student.model.load_state_dict(
+        checkpoint["student_model"], strict=False
+    )
+    non_segmentation_missing = [
+        key for key in missing_keys if not key.startswith("segmentation_head.")
+    ]
+    if non_segmentation_missing or unexpected_keys:
+        raise RuntimeError(
+            "Student checkpoint is incompatible with the current model. "
+            f"Missing keys: {non_segmentation_missing[:10]}; "
+            f"unexpected keys: {unexpected_keys[:10]}."
+        )
+    if missing_keys:
+        print(
+            "[checkpoint] segmentation head was absent and retains the "
+            "SAM3-initialized parameters.",
+            flush=True,
+        )
     distillation_adapters = checkpoint.get("distillation_adapters")
     if distillation_adapters is None:
         print(
@@ -411,7 +441,7 @@ if __name__ == "__main__":
         help="output directory",
     )
     parser.add_argument("--max-steps", type=int, default=None)
-    parser.add_argument("--resume", type=str, default=r"E:\reproduce\weights\sam3 distill\vit_small_patch14_reg4_dinov2 distill\latest_distillation.pt")
+    parser.add_argument("--resume", type=str, default=r"E:\reproduce\weights\sam3 distill\vit_small_patch14_reg4_dinov2 distill\学习率为1e-4\latest_distillation.pt")
     parser.add_argument("--eval-only", action="store_true")
     args = parser.parse_args()
     cfg = load_config(args.config)

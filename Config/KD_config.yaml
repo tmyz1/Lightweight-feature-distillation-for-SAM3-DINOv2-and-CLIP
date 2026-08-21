@@ -13,6 +13,7 @@ dataset:
   enable_segmentation: false
 
 Student:
+  enable_segmentation: true
   kd_resolution: 384
   position_encoding_resolution: 1008
   swin_backbone:

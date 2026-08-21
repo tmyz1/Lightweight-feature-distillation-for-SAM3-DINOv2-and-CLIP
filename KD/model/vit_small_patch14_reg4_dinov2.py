@@ -420,7 +420,7 @@ class Vit_Small_feature_extractor(torch.nn.Module):
             checkpoint_path=self.cfg.get("Sam3", {}).get("checkpoint_path"),
             device=str(self.device),
             eval_mode=False,
-            enable_segmentation=bool(self.cfg.get("Sam3", {}).get("enable_segmentation", False)),
+            enable_segmentation=bool(student_cfg.get("enable_segmentation", True)),
             enable_inst_interactivity=False,
             vit_small_checkpoint_path=student_cfg.get("vit_small_checkpoint_path"),
             return_interm_layers=cfg.get('train').get('return_interm_layers'),

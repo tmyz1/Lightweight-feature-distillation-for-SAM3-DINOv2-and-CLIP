@@ -27,7 +27,7 @@ Student:
   vit_small_pos_embed_resolution: 518
   position_encoding_resolution: 1008
   vit_small_checkpoint_path: "E:/reproduce/weights/DINO-V2/vit_small_patch14_reg4_dinov2.safetensors"
-  initial_checkpoint: "E:/reproduce/weights/sam3 distill/vit_small_patch14_reg4_dinov2 distill/best_student.pt"
+  initial_checkpoint: "E:/reproduce/weights/sam3 distill/vit_small_patch14_reg4_dinov2 distill/学习率为1e-4/best_student.pt"
   vit_small_intermediate_layers: [2, 5, 8, 11]
 
 mask_distill:
@@ -74,5 +74,9 @@ train:
 eval:
   enabled: true
   prompt_types: ["point", "box"]
+  point_sampling: "center"
+  prompt_chunk_size: 8
+  mask_threshold: 0.5
+  amp: true
   max_batches: 0
   log_every_batches: 10

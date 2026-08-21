@@ -11,10 +11,11 @@ dataset:
   resolution: 1008
   num_workers: 0
   batch_size: 4
-  enable_segmentation: false
+  enable_segmentation: False
 
 Student:
   model: "vit_small"
+  enable_segmentation: true
   kd_resolution: 1008
   vit_small_pos_embed_resolution: 518
   position_encoding_resolution: 1008
@@ -54,16 +55,16 @@ Adapter:
 
 optim:
   min_lr: 1.0e-6
-  trunk_lr: 1.0e-4
-  neck_lr: 2.0e-4
+  trunk_lr: 2.0e-4
+  neck_lr: 2e-4
   adapter_lr: 1.0e-4
   betas: [0.9, 0.999]
   weight_decay: 0.05
   max_grad_norm: 1.0
 
 param_scheduler:
-  warmup_updates: 500
-  warmup_start_factor: 0.1
+  warmup_updates: 1000
+  warmup_start_factor: 0.05
   min_lr: 1.0e-6
 
 loss:

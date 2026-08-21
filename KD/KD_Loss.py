@@ -2,6 +2,7 @@ from typing import List, Dict, Optional, Any, Sequence
 from dataclasses import dataclass
 import torch
 from torch.nn import functional as F
+from sam3.train.loss.loss_fns import dice_loss, sigmoid_focal_loss
 
 
 def strict_valid_region_mask(
@@ -45,6 +46,91 @@ def build_feature_valid_masks(
         strict_valid_region_mask(valid_boxes, feature.shape[-2:])
         for feature in features
     ]
+
+
+def _masked_mean(value: torch.Tensor, valid_mask: Optional[torch.Tensor]) -> torch.Tensor:
+    if valid_mask is None:
+        return value.mean()
+    valid_mask = valid_mask.to(device=value.device, dtype=value.dtype)
+    return (value * valid_mask).sum() / valid_mask.sum().clamp_min(1.0)
+
+
+def mask_distillation_loss(
+    student_masks: torch.Tensor,
+    teacher_masks: torch.Tensor,
+    student_scores: torch.Tensor,
+    teacher_scores: torch.Tensor,
+    student_queries: torch.Tensor,
+    teacher_queries: torch.Tensor,
+    cfg: Dict[str, Any],
+    valid_mask: Optional[torch.Tensor] = None,
+) -> tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    """Compute all decoder-level distillation losses on aligned SAM3 outputs."""
+    loss_cfg = cfg.get("loss", {})
+    temperature = float(loss_cfg.get("temperature", 1.0))
+    student_logits = student_masks.float() / temperature
+    teacher_targets = (teacher_masks.float() / temperature).sigmoid().detach()
+    num_masks = max(student_logits.shape[0], 1)
+    losses: Dict[str, torch.Tensor] = {}
+
+    if valid_mask is not None:
+        valid_mask = valid_mask.to(device=student_logits.device, dtype=student_logits.dtype)
+
+    bce_weight = float(loss_cfg.get("mask_bce_weight", 1.0))
+    if bce_weight > 0:
+        bce = F.binary_cross_entropy_with_logits(
+            student_logits, teacher_targets, reduction="none"
+        )
+        losses["mask_bce_loss"] = (
+            _masked_mean(bce, valid_mask) * bce_weight * temperature**2
+        )
+
+    focal_weight = float(loss_cfg.get("mask_focal_weight", 0.0))
+    if focal_weight > 0:
+        focal = sigmoid_focal_loss(
+            student_logits,
+            teacher_targets,
+            num_boxes=num_masks,
+            alpha=float(loss_cfg.get("focal_alpha", 0.25)),
+            gamma=float(loss_cfg.get("focal_gamma", 2.0)),
+            reduce=False,
+            triton=False,
+        )
+        losses["mask_focal_loss"] = (
+            _masked_mean(focal, valid_mask) * focal_weight * temperature**2
+        )
+
+    dice_weight = float(loss_cfg.get("mask_dice_weight", 1.0))
+    if dice_weight > 0:
+        dice_inputs = student_logits
+        dice_targets = teacher_targets
+        if valid_mask is not None:
+            dice_inputs = dice_inputs.masked_fill(valid_mask < 0.5, -20.0)
+            dice_targets = dice_targets * valid_mask
+        losses["mask_dice_loss"] = dice_loss(
+            dice_inputs.flatten(1),
+            dice_targets.flatten(1),
+            num_boxes=num_masks,
+        ) * dice_weight
+
+    score_weight = float(loss_cfg.get("score_mse_weight", 0.1))
+    if score_weight > 0:
+        losses["score_mse_loss"] = F.mse_loss(
+            student_scores.float(), teacher_scores.detach().float()
+        ) * score_weight
+
+    query_weight = float(loss_cfg.get("query_mse_weight", 0.0))
+    if query_weight > 0:
+        student_queries = F.normalize(student_queries.float(), dim=-1)
+        teacher_queries = F.normalize(teacher_queries.detach().float(), dim=-1)
+        losses["query_mse_loss"] = F.mse_loss(
+            student_queries, teacher_queries
+        ) * query_weight
+
+    if not losses:
+        raise ValueError("At least one mask distillation loss weight must be positive.")
+    total_loss = sum(losses.values())
+    return total_loss, {"total_loss": total_loss, **losses}
 
 """
 逐像素的特征mse损失计算

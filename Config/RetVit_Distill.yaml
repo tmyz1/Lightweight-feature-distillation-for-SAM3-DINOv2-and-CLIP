@@ -14,6 +14,7 @@ dataset:
 
 Student:
   model: "repvit"
+  enable_segmentation: true
   kd_resolution: 1008
   position_encoding_resolution: 1008
   repvit_checkpoint_path: "E:/reproduce/weights/RepVit/repvit_m1_1_distill_450e.pth"
@@ -97,4 +98,3 @@ eval:
   max_dets: 100
   log_every_batches: 20
   output_dir: "KD/eval_outputs/repvit"
-

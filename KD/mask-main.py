@@ -21,6 +21,7 @@ from KD.build_dataloader import (
 )
 from KD.decoder_mask_distill import MaskDistill, NoValidAnnotationsError
 from sam3.model.utils.misc import copy_data_to_device
+from sam3.train.loss.loss_fns import segment_miou
 
 
 def load_config(path: str) -> Dict[str, Any]:
@@ -69,6 +70,16 @@ def forward_with_amp(
         enabled=enabled,
     ):
         return model(batch, prompt_type=prompt_type)
+
+
+def predict_student_with_amp(model, batch, cfg, prompt_type):
+    enabled = bool(cfg.get("eval", {}).get("amp", True)) and model.device.type == "cuda"
+    with torch.autocast(
+        device_type=model.device.type,
+        dtype=torch.bfloat16,
+        enabled=enabled,
+    ):
+        return model.predict_student_masks(batch, prompt_type)
 
 
 def build_optimizer(model: MaskDistill, cfg: Dict[str, Any]):
@@ -124,7 +135,7 @@ def save_checkpoint(
     cfg: Dict[str, Any],
     epoch: int,
     global_update: int,
-    best_val_loss: float,
+    best_miou: float,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -136,7 +147,7 @@ def save_checkpoint(
             "cfg": cfg,
             "epoch": epoch,
             "global_update": global_update,
-            "best_val_loss": best_val_loss,
+            "best_miou": best_miou,
         },
         path,
     )
@@ -170,6 +181,7 @@ def evaluate(
     epoch: int,
     max_batches_override: int | None = None,
 ) -> Dict[str, float]:
+    """Evaluate prompted student masks against validation annotation masks."""
     if not bool(cfg.get("eval", {}).get("enabled", True)):
         return {}
     model.eval()
@@ -184,46 +196,55 @@ def evaluate(
         else int(eval_cfg.get("max_batches", 0))
     )
     total_batches = min(len(loader), max_batches) if max_batches > 0 else len(loader)
-    sums: Dict[str, float] = {}
-    counts: Dict[str, int] = {}
+    iou_sums = {str(prompt_type): 0.0 for prompt_type in prompt_types}
+    mask_counts = {str(prompt_type): 0 for prompt_type in prompt_types}
     skipped = 0
     valid_batches = 0
+    threshold = float(eval_cfg.get("mask_threshold", 0.5))
 
     for batch_index, batch in enumerate(loader, start=1):
         if int(batch.find_targets[0].num_boxes.sum()) == 0:
-            skipped += len(prompt_types)
+            skipped += 1
             continue
         valid_batches += 1
         if max_batches > 0 and valid_batches > max_batches:
             break
         batch = move_to_device(batch, model.device, cfg)
         for prompt_type in prompt_types:
+            prompt_type = str(prompt_type)
             try:
-                _, logs = forward_with_amp(model, batch, cfg, prompt_type=str(prompt_type))
+                output = predict_student_with_amp(
+                    model, batch, cfg, prompt_type
+                )
             except NoValidAnnotationsError:
                 skipped += 1
                 continue
-            for key, value in logs.items():
-                metric_key = f"{prompt_type}_{key}"
-                sums[metric_key] = sums.get(metric_key, 0.0) + float(
-                    value.detach().float().cpu()
-                )
-                counts[metric_key] = counts.get(metric_key, 0) + 1
+            predictions = output["pred_masks"].sigmoid() > threshold
+            targets = output["gt_masks"].bool()
+            count = len(targets)
+            batch_miou = segment_miou(predictions, targets)
+            iou_sums[prompt_type] += float(batch_miou.cpu()) * count
+            mask_counts[prompt_type] += count
         if should_log(valid_batches, total_batches, int(eval_cfg.get("log_every_batches", 20))):
+            running = {
+                f"{name}_mIoU": iou_sums[name] / max(mask_counts[name], 1)
+                for name in iou_sums
+            }
             print(
                 f"[val] epoch={epoch} valid_batch={valid_batches}/{total_batches} "
-                f"source_batch={batch_index}/{len(loader)}",
+                f"source_batch={batch_index}/{len(loader)} {format_logs(running)}",
                 flush=True,
             )
 
-    metrics = {key: value / counts[key] for key, value in sums.items()}
-    loss_values = [
-        value for key, value in metrics.items() if key.endswith("_total_loss")
-    ]
-    metrics["val_loss"] = (
-        sum(loss_values) / len(loss_values) if loss_values else float("inf")
-    )
-    metrics["skipped_prompt_batches"] = float(skipped)
+    metrics = {
+        f"{name}_mIoU": iou_sums[name] / max(mask_counts[name], 1)
+        for name in iou_sums
+    }
+    total_iou = sum(iou_sums.values())
+    total_masks = sum(mask_counts.values())
+    metrics["mIoU"] = total_iou / max(total_masks, 1)
+    metrics["evaluated_masks"] = float(total_masks)
+    metrics["skipped_batches"] = float(skipped)
     print(f"[val] epoch={epoch} {format_logs(metrics)}", flush=True)
     model.train()
     return metrics
@@ -266,14 +287,14 @@ def train(args, cfg: Dict[str, Any]) -> None:
     output_dir = Path(args.output)
     start_epoch = 1
     global_update = 0
-    best_val_loss = float("inf")
+    best_miou = float("-inf")
     if args.resume:
         checkpoint = load_checkpoint(
             Path(args.resume), model, optimizer, scheduler, scaler
         )
         start_epoch = int(checkpoint["epoch"]) + 1
         global_update = int(checkpoint["global_update"])
-        best_val_loss = float(checkpoint.get("best_val_loss", best_val_loss))
+        best_miou = float(checkpoint.get("best_miou", best_miou))
 
     if args.eval_only:
         evaluate(model, cfg, start_epoch - 1)
@@ -349,9 +370,9 @@ def train(args, cfg: Dict[str, Any]) -> None:
                 epoch,
                 max_batches_override=1 if args.smoke_test else None,
             )
-        current_val_loss = float(metrics.get("val_loss", running_loss / processed))
-        if current_val_loss < best_val_loss:
-            best_val_loss = current_val_loss
+        current_miou = float(metrics.get("mIoU", float("-inf")))
+        if current_miou > best_miou:
+            best_miou = current_miou
             save_checkpoint(
                 output_dir / "best_mask_distillation.pt",
                 model,
@@ -361,7 +382,7 @@ def train(args, cfg: Dict[str, Any]) -> None:
                 cfg,
                 epoch,
                 global_update,
-                best_val_loss,
+                best_miou,
             )
             save_student(output_dir / "best_mask_student.pt", model)
 
@@ -374,7 +395,7 @@ def train(args, cfg: Dict[str, Any]) -> None:
             cfg,
             epoch,
             global_update,
-            best_val_loss,
+            best_miou,
         )
         save_student(output_dir / "latest_mask_student.pt", model)
 
