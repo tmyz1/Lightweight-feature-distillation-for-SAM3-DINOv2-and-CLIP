@@ -35,9 +35,8 @@ def _load_state_dict(path: str) -> Dict[str, torch.Tensor]:
         }
     return checkpoint
 
-
+"""Distill annotation-prompted SAM3 masks from teacher to student."""
 class MaskDistill(nn.Module):
-    """Distill annotation-prompted SAM3 masks from teacher to student."""
 
     def __init__(self, cfg: Dict[str, Any], device: torch.device):
         super().__init__()

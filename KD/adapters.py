@@ -1,3 +1,4 @@
+import sys
 from typing import List, Optional, Sequence
 import torch
 import torch.nn as nn
@@ -28,7 +29,6 @@ class FeatureAlignAdapter(nn.Module):
         self,
         student_channel: int,
         teacher_channel: int,
-        hidden_channel: Optional[int] = None,
         use_norm: bool = True,
         use_gelu: bool = True,
         resize_first: bool = False,
@@ -44,24 +44,18 @@ class FeatureAlignAdapter(nn.Module):
         align_corners: 做双线性插值时的一个坐标对齐方式参数
         """
         super().__init__()
-
-        hidden_channel = hidden_channel or teacher_channel
         self.resize_first = resize_first
         self.align_corners = align_corners
 
         layers = [
-            nn.Conv2d(student_channel, hidden_channel, kernel_size=1, bias=True),
+            nn.Conv2d(student_channel, teacher_channel, kernel_size=1, bias=True),
         ]
 
         if use_norm:
-            layers.append(LayerNorm2d(hidden_channel))
+            layers.append(LayerNorm2d(teacher_channel))
 
         if use_gelu:
             layers.append(nn.GELU())
-
-        layers.append(
-            nn.Conv2d(hidden_channel, teacher_channel, kernel_size=1, bias=True)
-        )
 
         self.channel_proj = nn.Sequential(*layers)
 
@@ -76,18 +70,10 @@ class FeatureAlignAdapter(nn.Module):
             align_corners=self.align_corners,
         )
 
-    @staticmethod
-    def _safe_num_groups(channels: int) -> int:#给 hidden_channels 自动选一个不会报错的 GroupNorm 分组数
-        for groups in (32, 16, 8, 4, 2, 1):
-            if channels % groups == 0:
-                return groups
-        return 1
-
     def forward(
         self,
         student: torch.Tensor,
         teacher: Optional[torch.Tensor] = None,
-        target_hw: Optional[Sequence[int]] = None,
     ) -> torch.Tensor:
         """
         student: 学生网络特征图像
@@ -100,17 +86,13 @@ class FeatureAlignAdapter(nn.Module):
         if teacher is not None:
             if teacher.ndim != 4:
                 raise ValueError(f"teacher must be [B, C, H, W], got {teacher.shape}")
-            target_hw = teacher.shape[-2:]
-
-        if target_hw is None:
-            raise ValueError("Either teacher or target_hw must be provided.")
 
         if self.resize_first:
-            student = self._resize(student, target_hw)
+            student = self._resize(student, teacher.shape[-2:])
             student = self.channel_proj(student)
         else:
             student = self.channel_proj(student)
-            student = self._resize(student, target_hw)
+            student = self._resize(student, teacher.shape[-2:])
 
         return student
 
@@ -125,7 +107,6 @@ class MultiScaleFeatureAlignAdapter(nn.Module):
         self,
         student_features_channel: Sequence[int],
         teacher_features_channel: Sequence[int],
-        target_sizes: Sequence[Sequence[int]],
     ):
         """
         student_features:所有学生网络的特征图层
@@ -133,26 +114,25 @@ class MultiScaleFeatureAlignAdapter(nn.Module):
         target_sizes: 每一层统一设置的目标尺寸
         """
         super().__init__()
-        if not (len(student_features_channel) == len(teacher_features_channel) == len(target_sizes)):
+        if not len(student_features_channel) == len(teacher_features_channel):
             assert (f'length of student_features, teacher_features, target_sizes are different'
                     f'\nstudent_features length: {len(student_features_channel)}, '
                     f'\nteacher_features length: {len(teacher_features_channel)}, '
-                    f'\ntarget_sizes length: {len(target_sizes)}')
+                    )
 
         self.adapters = nn.ModuleList(
             FeatureAlignAdapter(in_ch, out_ch)
             for in_ch, out_ch in zip(student_features_channel, teacher_features_channel)
         )
-        self.target_sizes = [tuple(size) for size in target_sizes]
 
 
-    def forward(self, features: Sequence[torch.Tensor]) -> list[torch.Tensor]:
+    def forward(self, features: Sequence[torch.Tensor],teacher_features: Sequence[torch.Tensor]) -> list[torch.Tensor]:
         if len(features) != len(self.adapters):
             assert f'length of features {len(features)} != length of adapter {len(self.adapters)}'
 
         return [
-            adapter(feature, target_hw=target_size)
-            for adapter, feature, target_size in zip(self.adapters, features, self.target_sizes)
+            adapter(feature, teacher_feature)
+            for adapter, feature, teacher_feature in zip(self.adapters, features, teacher_features)
         ]
 
 
@@ -179,15 +159,15 @@ class MultiScaleClsTokenAlignAdapter(nn.Module):
             for student_channel, teacher_channel in zip(student_channels, teacher_channels)
         )
 
-    def forward(self, cls_tokens: Sequence[torch.Tensor]) -> List[torch.Tensor]:
+    def forward(self, cls_tokens: Sequence[torch.Tensor],teacher_cls_tokens: Sequence[torch.Tensor]) -> List[torch.Tensor]:
         if len(cls_tokens) != len(self.adapters):
             raise ValueError(
                 f"length of cls_tokens {len(cls_tokens)} != length of adapter {len(self.adapters)}"
             )
 
         return [
-            adapter(cls_token)
-            for adapter, cls_token in zip(self.adapters, cls_tokens)
+            adapter(cls_token, teacher_cls_token)
+            for adapter, cls_token, teacher_cls_token in zip(self.adapters, cls_tokens, teacher_cls_tokens)
         ]
 
 

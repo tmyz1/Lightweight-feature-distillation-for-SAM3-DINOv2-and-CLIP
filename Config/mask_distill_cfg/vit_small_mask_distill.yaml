@@ -1,15 +1,15 @@
 device: "cuda"
 
 dataset:
-  root: "E:/my_data/COCO"
-  train_split: "train2017"
+  root: "F:/data/SA-1B/SA-Small"
+  train_split: "SA-train"
   val_split: "val2017"
-  train_num_images: 5000
+  train_num_images: null
   val_num_images: 100
   train_subset_seed: 123
   val_subset_seed: 123
   eval_category_chunk_size: 1000
-  max_objects_per_query: 200
+  max_objects_per_query: 800
   resolution: 1008
   batch_size: 1
   num_workers: 0
@@ -27,7 +27,7 @@ Student:
   vit_small_pos_embed_resolution: 518
   position_encoding_resolution: 1008
   vit_small_checkpoint_path: "E:/reproduce/weights/DINO-V2/vit_small_patch14_reg4_dinov2.safetensors"
-  initial_checkpoint: "E:/reproduce/weights/sam3 distill/vit_small_patch14_reg4_dinov2 distill/学习率为1e-4/best_student.pt"
+  initial_checkpoint: "E:/reproduce/weights/sam3 distill/vit_small_patch14_reg4_dinov2 distill/学习率2e-4/latest_student.pt"
   vit_small_intermediate_layers: [2, 5, 8, 11]
 
 mask_distill:
@@ -51,23 +51,23 @@ loss:
   focal_gamma: 2.0
 
 optim:
-  lr: 1.0e-5
-  min_lr: 1.0e-6
+  lr: 2.0e-5
+  min_lr: 5.0e-7
   betas: [0.9, 0.999]
   weight_decay: 0.05
   max_grad_norm: 1.0
 
 param_scheduler:
-  warmup_updates: 100
-  warmup_start_factor: 0.1
-  min_lr: 1.0e-6
+  warmup_updates: 500
+  warmup_start_factor: 0.05
+  min_lr: 5.0e-7
 
 train:
-  epochs: 20
+  epochs: 10
   max_train_batches: 0
   accumulation_steps: 1
   eval_every_epochs: 1
-  log_every_batches: 10
+  log_every_batches: 100
   amp: true
   seed: 123
 
@@ -79,4 +79,4 @@ eval:
   mask_threshold: 0.5
   amp: true
   max_batches: 0
-  log_every_batches: 10
+  log_every_batches: 100

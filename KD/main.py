@@ -25,8 +25,10 @@ from KD.build_dataloader import (
     build_dataloader,
     build_val_dataloader,
     get_selected_coco_image_ids,
+    get_split_root,
     resolve_split_paths,
 )
+from KD.data.SA_1B import is_sa1b_dataset
 from KD.distill_model import Distill
 
 #下载配置文件
@@ -245,8 +247,17 @@ def evaluate(model: Distill, cfg: Dict[str, Any], step: int):
     #获取验证集所在路径
     eval_cfg = cfg.get("eval", {})
     dataset_cfg = cfg["dataset"]
+    if is_sa1b_dataset(dataset_cfg, training=False):
+        print(
+            "[eval] COCO mAP is skipped for direct SA-1B loading because "
+            "no COCO validation annotation file is configured.",
+            flush=True,
+        )
+        return {}
     split = dataset_cfg.get("val_split", "valid")
-    _, ann_file = resolve_split_paths(Path(dataset_cfg["root"]), split)
+    _, ann_file = resolve_split_paths(
+        get_split_root(dataset_cfg, training=False), split
+    )
     dump_dir = Path(eval_cfg.get("output_dir", "KD/eval_outputs")) / f"step_{step}"
     dump_dir.mkdir(parents=True, exist_ok=True)
     val_loader = build_val_dataloader(cfg)
@@ -386,16 +397,36 @@ def load_checkpoint(
     missing_keys, unexpected_keys = model.Student.model.load_state_dict(
         checkpoint["student_model"], strict=False
     )
+    legacy_fusion_keys = {
+        "backbone.vision_backbone.layer_fusion_logits",
+    }
     non_segmentation_missing = [
-        key for key in missing_keys if not key.startswith("segmentation_head.")
+        key
+        for key in missing_keys
+        if not key.startswith("segmentation_head.") and key not in legacy_fusion_keys
     ]
-    if non_segmentation_missing or unexpected_keys:
+    unsupported_unexpected = [
+        key for key in unexpected_keys if key not in legacy_fusion_keys
+    ]
+    if non_segmentation_missing or unsupported_unexpected:
         raise RuntimeError(
             "Student checkpoint is incompatible with the current model. "
             f"Missing keys: {non_segmentation_missing[:10]}; "
-            f"unexpected keys: {unexpected_keys[:10]}."
+            f"unexpected keys: {unsupported_unexpected[:10]}."
         )
-    if missing_keys:
+    if unexpected_keys:
+        print(
+            "[checkpoint] ignored removed ViT-Small fusion parameters.",
+            flush=True,
+        )
+    restored_fusion_parameter = any(key in missing_keys for key in legacy_fusion_keys)
+    if restored_fusion_parameter:
+        print(
+            "[checkpoint] added ViT-Small fusion parameters retain their "
+            "current zero initialization.",
+            flush=True,
+        )
+    if any(key.startswith("segmentation_head.") for key in missing_keys):
         print(
             "[checkpoint] segmentation head was absent and retains the "
             "SAM3-initialized parameters.",
@@ -416,8 +447,22 @@ def load_checkpoint(
                     "distillation configuration does not create it."
                 )
             getattr(model, name).load_state_dict(state_dict, strict=True)
-    optimizer.load_state_dict(checkpoint["optimizer"])
     scheduler.load_state_dict(checkpoint["scheduler"])
+    if restored_fusion_parameter:
+        # The new trainable parameter changes the AdamW parameter-group layout.
+        # Keep its zero initialization and resume with fresh optimizer moments.
+        resumed_update = int(checkpoint["global_update"])
+        scheduler.last_epoch = resumed_update - 1
+        scheduler._step_count = resumed_update
+        scheduler.step()
+        print(
+            "[checkpoint] optimizer moments were reset because the fusion "
+            "parameter did not exist in this checkpoint; scheduler progress "
+            "was preserved.",
+            flush=True,
+        )
+    else:
+        optimizer.load_state_dict(checkpoint["optimizer"])
     scaler.load_state_dict(checkpoint["scaler"])
     print(
         f"[checkpoint] resumed: {path} step={checkpoint['step']} "
@@ -441,7 +486,7 @@ if __name__ == "__main__":
         help="output directory",
     )
     parser.add_argument("--max-steps", type=int, default=None)
-    parser.add_argument("--resume", type=str, default=r"E:\reproduce\weights\sam3 distill\vit_small_patch14_reg4_dinov2 distill\学习率为1e-4\latest_distillation.pt")
+    parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--eval-only", action="store_true")
     args = parser.parse_args()
     cfg = load_config(args.config)

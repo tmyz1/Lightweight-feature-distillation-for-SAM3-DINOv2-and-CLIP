@@ -150,12 +150,14 @@ class Sam3ViTSmallFPNDetNeck(nn.Module):
         vit_feature_size: Tuple[int, int] = (72, 72),
         scale_factors: Sequence[float] = (4.0, 2.0, 1.0, 0.5),
         add_sam2_neck: bool = False,
+        fuse_neck_features: bool = True,
     ):
         super().__init__()
         self.trunk = trunk
         self.position_encoding = position_encoding
         self.vit_feature_size = tuple(vit_feature_size)
         self.scale_factors = tuple(scale_factors)
+        self.fuse_neck_features = fuse_neck_features
         self.num_input_features = len(trunk.channel_list)
         self.layer_fusion_logits = nn.Parameter(
             torch.zeros(self.num_input_features, dtype=torch.float32)
@@ -268,8 +270,13 @@ class Sam3ViTSmallFPNDetNeck(nn.Module):
         Optional[List[torch.Tensor]],
     ]:
         xs = self.trunk(tensor_list)
-        x = self._fuse_intermediate_features(xs) if len(xs) > 1 else xs[0]
-        sam3_vit_like = self._project_to_vit_feature(x, self.feature_proj)
+        #x = self._fuse_intermediate_features(xs) if len(xs) > 1 else xs[0]
+        feature = (
+            self._fuse_intermediate_features(xs)
+            if self.fuse_neck_features and len(xs) > 1
+            else xs[-1]
+        )
+        sam3_vit_like = self._project_to_vit_feature(feature, self.feature_proj)
         sam3_out = self._build_simple_fpn_outputs(sam3_vit_like, self.output_convs)
         sam3_pos = [
             self.position_encoding(feature).to(feature.dtype) for feature in sam3_out
@@ -277,7 +284,9 @@ class Sam3ViTSmallFPNDetNeck(nn.Module):
 
         sam2_out, sam2_pos = None, None
         if self.sam2_feature_proj is not None and self.sam2_output_convs is not None:
-            sam2_vit_like = self._project_to_vit_feature(x, self.sam2_feature_proj)
+            sam2_vit_like = self._project_to_vit_feature(
+                feature, self.sam2_feature_proj
+            )
             sam2_out = self._build_simple_fpn_outputs(
                 sam2_vit_like, self.sam2_output_convs
             )
@@ -292,6 +301,7 @@ def _create_vit_small_neck(
     position_encoding,
     vit_small_backbone,
     enable_inst_interactivity=False,
+    fuse_neck_features=True,
 ):
     return Sam3ViTSmallFPNDetNeck(
         position_encoding=position_encoding,
@@ -301,6 +311,7 @@ def _create_vit_small_neck(
         vit_feature_size=(72, 72),
         scale_factors=(4.0, 2.0, 1.0, 0.5),
         add_sam2_neck=enable_inst_interactivity,
+        fuse_neck_features=fuse_neck_features,
     )
 
 def _create_vit_small_backbone(
@@ -310,6 +321,7 @@ def _create_vit_small_backbone(
     vit_small_intermediate_layers: Sequence[int] = (2, 5, 8, 11),
     image_size: int = 518,
     position_encoding_resolution: int = 1008,
+    fuse_neck_features: bool = True,
 ) -> Sam3ViTSmallFPNDetNeck:
     position_encoding = _create_position_encoding(
         precompute_resolution=position_encoding_resolution
@@ -324,6 +336,7 @@ def _create_vit_small_backbone(
         position_encoding,
         vit_backbone,
         enable_inst_interactivity=enable_inst_interactivity,
+        fuse_neck_features=fuse_neck_features,
     )
     return vit_neck
 
@@ -367,6 +380,7 @@ def build_vit_small_image_model(
         return_interm_layers = return_interm_layers,
         image_size=pos_embed_image_size,
         position_encoding_resolution=position_encoding_resolution,
+        fuse_neck_features=bool(student_cfg.get("fuse_neck_features", True)),
     )
     if compile_mode is not None:
         vision_encoder = torch.compile(vision_encoder)
@@ -455,9 +469,11 @@ class Vit_Small_feature_extractor(torch.nn.Module):
 
         student_trunk = vision_backbone.trunk
         backbone_features, cls_tokens = student_trunk.get_intermediate_features(img)
-        feature = vision_backbone._fuse_intermediate_features(
-            backbone_features
-        ) if len(backbone_features) > 1 else backbone_features[0]
+        feature = (
+            vision_backbone._fuse_intermediate_features(backbone_features)
+            if vision_backbone.fuse_neck_features and len(backbone_features) > 1
+            else backbone_features[-1]
+        )
         vit_like = vision_backbone._project_to_vit_feature(
             feature, vision_backbone.feature_proj
         )

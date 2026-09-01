@@ -1,21 +1,30 @@
 device: "cuda"
 
+distillation:
+  teacher_mode: "sam3"
+
 dataset:
-  root: "F:/data/SA-1B/SA-Small"
-  train_split: "SA-train"
+  type: "sa1b"
+  root: "F:/data/SA-1B"
+  train_type: "sa1b"
+  val_type: "coco"
+  val_root: "F:/data/SA-1B/val"
+  train_split: "sa1b"
   val_split: "val2017"
-  eval_category_chunk_size: 1
-  train_num_images: 10000
+  sa1b_train_shards: null
+  eval_category_chunk_size: 2
+  train_num_images: null
   val_num_images: 100
   max_objects_per_query: 800
   resolution: 1008
   num_workers: 0
-  batch_size: 4
+  batch_size: 2
   enable_segmentation: False
 
 Student:
   model: "vit_small"
   enable_segmentation: true
+  fuse_neck_features: true
   kd_resolution: 1008
   vit_small_pos_embed_resolution: 518
   position_encoding_resolution: 1008
@@ -50,27 +59,25 @@ Adapter:
   student_channel: [384]
   student_cls_channel: [384]
   teacher_channel: [1024]
-  target_sizes:
-    - [72, 72]
 
 optim:
-  min_lr: 1.0e-6
+  min_lr: 5.0e-7
   trunk_lr: 2.0e-4
-  neck_lr: 2e-4
+  neck_lr: 1e-4
   adapter_lr: 1.0e-4
   betas: [0.9, 0.999]
   weight_decay: 0.05
   max_grad_norm: 1.0
 
 param_scheduler:
-  warmup_updates: 1000
+  warmup_updates: 5000
   warmup_start_factor: 0.05
-  min_lr: 1.0e-6
+  min_lr: 5.0e-7
 
 loss:
   mask_sam3_padding: true
-  features_loss_weight: 0.50
-  necks_loss_weight: 0.40
+  features_loss_weight: 0.80
+  necks_loss_weight: 0.20
   cls_tokens_loss_weight: 0.10
   normalize_features: true
   sam3_features_weight: 1.0
@@ -86,12 +93,12 @@ loss:
     smooth_l1: 0.5
 
 train:
-  max_steps: 80
+  max_steps: 2
   eval_every_steps: 1
   log_every_batches: 50
   amp: true
   seed: 123
-  return_interm_layers: False
+  return_interm_layers: True
 
 eval:
   enabled: true
