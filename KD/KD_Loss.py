@@ -380,3 +380,7 @@ def cls_token_total_loss(
     losses['cls_total_loss'] = cls_total_loss
 
     return losses
+
+if __name__ == '__main__':
+    a = torch.arange(10).float()
+    print(a)

@@ -11,14 +11,14 @@ from typing import Any, Dict
 import torch
 import yaml
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from sam3.eval.coco_eval_offline import CocoEvaluatorOfflineWithPredFileEvaluators
 from sam3.eval.coco_writer import PredictionDumper
 from sam3.eval.postprocessors import PostProcessImage
 from sam3.model.utils.misc import copy_data_to_device
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from KD.build_dataloader import (
     add_multi_resolution_batches,

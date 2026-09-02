@@ -63,7 +63,7 @@ def _get_sa1b_shard_dirs(root: Path, shard_names: Any) -> list[Path]:
         path
         for path in root.iterdir()
         if path.is_dir()
-        and path.name.startswith("sa_")
+        and (path.name.startswith("sa_") or path.name.startswith("images"))
         and (requested_shards is None or path.name in requested_shards)
     )
     if requested_shards is not None:
