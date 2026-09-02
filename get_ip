@@ -1,0 +1,4 @@
+$ips = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike "127.*" -and $_.PrefixOrigin -ne "WellKnown" }; $ports = @(7890,7891,7897,1080,10808,8080,8118); "Local IPv4:"; $ips | Select-Object InterfaceAlias,IPAddress; "`nListening proxy-like ports:"; foreach ($p in $ports) { $c = Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue; if ($c) { $c | ForEach-Object { $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; [PSCustomObject]@{Port=$p; ListenAddress=$_.LocalAddress; PID=$_.OwningProcess; Process=$proc.ProcessName; Path=$proc.Path} } } }
+curl -I -x http://本地IP:端口 https://github.com --connect-timeout 10
+export http_proxy=http://10.9.50.94:7897
+export https_proxy=http://10.9.50.94:7897
