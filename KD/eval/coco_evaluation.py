@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import contextlib
+import heapq
 import io
 import json
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict
 
@@ -93,6 +95,28 @@ def write_coco_annotation_subset(
     return output_path
 
 
+def keep_top_predictions_per_image(
+    predictions: list[dict[str, Any]], max_dets: int
+) -> list[dict[str, Any]]:
+    """Match PredictionDumper's per-image top-k rule without all_gather."""
+    predictions_by_image: dict[int, list[tuple[float, int, dict[str, Any]]]] = (
+        defaultdict(list)
+    )
+    for index, prediction in enumerate(predictions):
+        image_predictions = predictions_by_image[prediction["image_id"]]
+        heap_item = (float(prediction["score"]), index, prediction)
+        if len(image_predictions) < max_dets:
+            heapq.heappush(image_predictions, heap_item)
+        else:
+            heapq.heappushpop(image_predictions, heap_item)
+
+    return [
+        prediction
+        for image_predictions in predictions_by_image.values()
+        for _, _, prediction in image_predictions
+    ]
+
+
 @torch.no_grad()
 def evaluate(model, cfg: Dict[str, Any], step: int):
     model = unwrap_model(model)
@@ -146,13 +170,14 @@ def evaluate(model, cfg: Dict[str, Any], step: int):
     )
 
     #构造预测结果 dumper
+    # evaluate() is invoked by rank 0 only from KD/main.py. Therefore this
+    # dumper must not call SAM3's distributed all_gather during COCO export.
     dumper = PredictionDumper(
         dump_dir=str(dump_dir),
         postprocessor=postprocessor,
         maxdets=int(eval_cfg.get("max_dets", 100)),
         iou_type="bbox",
-        merge_predictions=True,
-        pred_file_evaluators=[evaluator],
+        merge_predictions=False,
     )
 
     was_training = model.Student.model.training
@@ -169,7 +194,14 @@ def evaluate(model, cfg: Dict[str, Any], step: int):
             outputs = forward_student_for_eval(model, batch, cfg)
         dumper.update(find_stages=outputs, find_metadatas=batch.find_metadatas)
 
-    metrics = dumper.compute_synced()
+    print(f"[eval] step={step} exporting predictions", flush=True)
+    dumper.dump = keep_top_predictions_per_image(
+        dumper.dump,
+        int(eval_cfg.get("max_dets", 100)),
+    )
+    dumped_file = dumper.synchronize_between_processes()
+    print(f"[eval] step={step} computing COCO metrics", flush=True)
+    metrics = evaluator.evaluate(dumped_file)
     if was_training:
         model.Student.model.train()
     print(f"[eval] step={step} {format_metrics(metrics)}", flush=True)

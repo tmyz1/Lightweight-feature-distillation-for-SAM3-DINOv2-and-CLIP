@@ -3,6 +3,11 @@ device: "cuda"
 distillation:
   teacher_mode: "sam3"
 
+multi_gpu:
+  enabled: false
+  backend: "gloo"
+  find_unused_parameters: false
+
 dataset:
   type: "sa1b"
   root: "/data/db1/sa1b"
