@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import Any, Dict
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -278,6 +280,7 @@ def build_split_dataloader(
     limit_ids=None,
     shuffle: bool = True,
     drop_last: bool = True,
+    distributed: bool | None = None,
 ) -> DataLoader:
     dataset_cfg = cfg["dataset"]
     root = get_split_root(dataset_cfg, training)
@@ -350,10 +353,24 @@ def build_split_dataloader(
                 subset_seed,
             )
 
+    if distributed is None:
+        distributed = bool(cfg.get("multi_gpu", {}).get("enabled", False))
+    use_distributed_sampler = bool(distributed) and dist.is_available() and dist.is_initialized()
+    sampler = None
+    if use_distributed_sampler:
+        sampler = DistributedSampler(
+            dataset,
+            num_replicas=dist.get_world_size(),
+            rank=dist.get_rank(),
+            shuffle=shuffle,
+            drop_last=drop_last,
+        )
+
     return DataLoader(
         dataset,
         batch_size=int(dataset_cfg.get("batch_size", 1)),
-        shuffle=shuffle,
+        shuffle=shuffle if sampler is None else False,
+        sampler=sampler,
         num_workers=int(dataset_cfg.get("num_workers", 0)),
         pin_memory=torch.cuda.is_available(),
         drop_last=drop_last,
@@ -370,6 +387,7 @@ def build_dataloader(cfg: Dict[str, Any]) -> DataLoader:
         limit_ids=dataset_cfg.get("train_num_images", 1000),
         shuffle=True,
         drop_last=True,
+        distributed=True,
     )
 
 
@@ -382,4 +400,5 @@ def build_val_dataloader(cfg: Dict[str, Any]) -> DataLoader:
         limit_ids=dataset_cfg.get("val_num_images"),
         shuffle=False,
         drop_last=False,
+        distributed=False,
     )

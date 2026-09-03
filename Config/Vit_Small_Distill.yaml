@@ -3,6 +3,11 @@ device: "cuda"
 distillation:
   teacher_mode: "sam3"
 
+multi_gpu:
+  enabled: false
+  backend: "gloo"
+  find_unused_parameters: false
+
 dataset:
   type: "sa1b"
   root: "F:/data/SA-1B"
@@ -13,8 +18,8 @@ dataset:
   val_split: "val2017"
   sa1b_train_shards: null
   eval_category_chunk_size: 2
-  train_num_images: null
-  val_num_images: 100
+  train_num_images: 100
+  val_num_images: 10
   max_objects_per_query: 800
   resolution: 1008
   num_workers: 0
