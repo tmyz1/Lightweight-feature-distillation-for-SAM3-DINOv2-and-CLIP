@@ -386,10 +386,7 @@ class FlexibleFilterFindGetQueries:
         datapoint.find_queries = new_find_queries
 
         if len(datapoint.find_queries) == 0:
-            print("Warning: No find queries left in datapoint, this is not allowed")
-            print("Filtering function:", self.query_filter)
-            print("Datapoint:", datapoint)
-            raise ValueError
+            raise ValueError("No find queries left after filtering")
 
         # The deletion may have removed intermediate steps, so we need to remap to make them contiguous again
         all_stages = sorted(

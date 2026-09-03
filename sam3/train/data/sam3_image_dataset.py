@@ -517,9 +517,10 @@ class Sam3ImageDataset(CustomCocoDetectionAPI):
 
                 break
             except (DecompressionBombError, OSError, ValueError) as error:
-                sys.stderr.write(f"ERROR: got loading error on datapoint {idx}\n")
-                sys.stderr.write(f"Exception: {error}\n")
-                sys.stderr.write(traceback.format_exc())
+                if str(error) != "No find queries left after filtering":
+                    sys.stderr.write(f"ERROR: got loading error on datapoint {idx}\n")
+                    sys.stderr.write(f"Exception: {error}\n")
+                    sys.stderr.write(traceback.format_exc())
                 idx = (idx + 1) % len(self)
         else:
             raise RuntimeError(
