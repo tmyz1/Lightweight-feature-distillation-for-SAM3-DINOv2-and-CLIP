@@ -5,7 +5,7 @@ distillation:
 
 multi_gpu:
   enabled: True
-  backend: "gloo"
+  backend: "nccl"
   find_unused_parameters: True
 
 dataset:
@@ -81,8 +81,8 @@ param_scheduler:
 
 loss:
   mask_sam3_padding: true
-  features_loss_weight: 0.80
-  necks_loss_weight: 0.20
+  features_loss_weight: 0
+  necks_loss_weight: 1.0
   cls_tokens_loss_weight: 0.10
   normalize_features: true
   sam3_features_weight: 1.0

@@ -132,6 +132,7 @@ if __name__ == "__main__":
         destroy_distributed()
         raise SystemExit(0)
 
+    #begin training
     for step in range(start_step, max_steps + 1):
         if is_distributed() and hasattr(dataloader.sampler, "set_epoch"):
             dataloader.sampler.set_epoch(step)
