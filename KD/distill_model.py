@@ -268,14 +268,14 @@ class _BaseDistill(nn.Module):
             if self.CLIP:
                 student_to_clip_cls_tokens = self.CLIP_cls_adapter(student_cls_tokens, clip_cls_tokens)
 
-        # sam3_loss = features_total_loss(
-        #     student_features=student_to_sam3_features,
-        #     teacher_features=sam3_teacher_features,
-        #     losses_type=losses_type,
-        #     cfg=self.cfg,
-        #     avg=True,
-        #     valid_masks=sam3_feature_valid_masks,
-        # )
+        sam3_loss = features_total_loss(
+            student_features=student_to_sam3_features,
+            teacher_features=sam3_teacher_features,
+            losses_type=losses_type,
+            cfg=self.cfg,
+            avg=True,
+            valid_masks=sam3_feature_valid_masks,
+        )
         if self.Dino_v2:
             dino_v2_loss = features_total_loss(
                 student_features=student_to_dino_v2_features,
@@ -328,8 +328,8 @@ class _BaseDistill(nn.Module):
             "clip": float(loss_cfg.get("clip_features_weight", 0.15)) if self.CLIP else 0,
         }
         feature_weight_sum = sum(teacher_feature_weights.values())
-        feature_loss = torch.zeros((), device=self.device)
-        #feature_loss = sam3_loss["total_loss"] * teacher_feature_weights["sam3"]
+        # feature_loss = torch.zeros((), device=self.device)
+        feature_loss = sam3_loss["total_loss"] * teacher_feature_weights["sam3"]
         if self.Dino_v2:
             feature_loss += dino_v2_loss["total_loss"] * teacher_feature_weights["dino_v2"]
         if self.CLIP:
@@ -343,11 +343,11 @@ class _BaseDistill(nn.Module):
 
         logs = {
             "total_loss": total_loss,
-            #"avg_feature_loss": feature_loss,
+            "avg_feature_loss": feature_loss,
             "neck_loss": neck_loss["total_loss"],
             "cls_token_loss": cls_tokens_loss,
-            #"sam3_features_loss": sam3_loss["total_loss"],
-            #"sam3_mse_loss": sam3_loss.get("mse", torch.zeros((), device=self.device)),
+            "sam3_features_loss": sam3_loss["total_loss"],
+            "sam3_mse_loss": sam3_loss.get("mse", torch.zeros((), device=self.device)),
             "neck_mse_loss": neck_loss.get("mse", torch.zeros((), device=self.device)),
         }
         if self.Dino_v2:

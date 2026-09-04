@@ -30,7 +30,7 @@ class FeatureAlignAdapter(nn.Module):
         student_channel: int,
         teacher_channel: int,
         use_norm: bool = True,
-        use_gelu: bool = True,
+        use_gelu: bool = False,
         resize_first: bool = False,
         align_corners: bool = False,
     ):
