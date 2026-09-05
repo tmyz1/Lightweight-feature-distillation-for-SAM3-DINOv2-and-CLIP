@@ -1,7 +1,7 @@
 device: "cuda"
 
 distillation:
-  teacher_mode: "sam3"
+  teacher_mode: "sam3_dino_v2_clip"
 
 multi_gpu:
   enabled: True
@@ -22,8 +22,8 @@ dataset:
   val_num_images: 10
   max_objects_per_query: 800
   resolution: 1008
-  num_workers: 0
-  batch_size: 2
+  num_workers: 8
+  batch_size: 8
   enable_segmentation: False
 
 Student:
@@ -67,9 +67,9 @@ Adapter:
 
 optim:
   min_lr: 5.0e-7
-  trunk_lr: 2.0e-4
-  neck_lr: 1e-4
-  adapter_lr: 1.0e-4
+  trunk_lr: 5.0e-4
+  neck_lr: 2e-4
+  adapter_lr: 2.0e-4
   betas: [0.9, 0.999]
   weight_decay: 0.05
   max_grad_norm: 1.0
@@ -81,13 +81,13 @@ param_scheduler:
 
 loss:
   mask_sam3_padding: true
-  features_loss_weight: 0
-  necks_loss_weight: 1.0
-  cls_tokens_loss_weight: 0.10
+  features_loss_weight: 0.1
+  necks_loss_weight: 0.9
+  cls_tokens_loss_weight: 0
   normalize_features: true
-  sam3_features_weight: 1.0
-  dino_v2_features_weight: 0.15
-  clip_features_weight: 0.15
+  sam3_features_weight: 0
+  dino_v2_features_weight: 0.5
+  clip_features_weight: 0.5
   losses_type: ["cosine", "mse"]
   cls_losses_type: ["cosine", "smooth_l1"]
   features_loss:
