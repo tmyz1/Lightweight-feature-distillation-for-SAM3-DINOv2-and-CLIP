@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import torch
+import torch.distributed as dist
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -17,12 +18,18 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from KD.build_dataloader import (
     add_multi_resolution_batches,
-    build_val_dataloader,
+    build_split_dataloader,
     get_selected_coco_image_ids,
     get_split_root,
     resolve_split_paths,
 )
 from KD.model.vit_small_patch14_reg4_dinov2 import build_vit_small_image_model
+from KD.training.distributed import (
+    destroy_distributed,
+    initialize_distributed,
+    is_distributed,
+    is_main_process,
+)
 from sam3.eval.coco_eval_offline import CocoEvaluatorOfflineWithPredFileEvaluators
 from sam3.eval.coco_writer import PredictionDumper
 from sam3.eval.postprocessors import PostProcessImage
@@ -31,7 +38,7 @@ from sam3.model.utils.misc import copy_data_to_device
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "Config" / "Vit_Small_Distill.yaml"
 DEFAULT_CHECKPOINT_PATH = Path(
-    r"E:\pycharm\Vision Distillation\output\mask_distill\latest_mask_student.pt"
+    r"E:\reproduce\weights\sam3 distill\vit_small_patch14_reg4_dinov2 distill\best_student.pt"
 )
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "outputs" / "latest_student_val"
 
@@ -119,6 +126,19 @@ def build_student_model(
     return model
 
 
+def build_evaluation_dataloader(cfg: Dict[str, Any]):
+    dataset_cfg = cfg["dataset"]
+    return build_split_dataloader(
+        cfg,
+        split=dataset_cfg.get("val_split", "valid"),
+        training=False,
+        limit_ids=dataset_cfg.get("val_num_images"),
+        shuffle=False,
+        drop_last=False,
+        distributed=is_distributed(),
+    )
+
+
 @torch.no_grad()
 def evaluate(model: torch.nn.Module, cfg: Dict[str, Any], output_dir: Path, use_amp: bool):
     dataset_cfg = cfg["dataset"]
@@ -127,17 +147,26 @@ def evaluate(model: torch.nn.Module, cfg: Dict[str, Any], output_dir: Path, use_
     _, annotation_path = resolve_split_paths(
         get_split_root(dataset_cfg, training=False), split
     )
-    val_loader = build_val_dataloader(cfg)
+    val_loader = build_evaluation_dataloader(cfg)
 
     evaluation_annotations = annotation_path
     if dataset_cfg.get("val_num_images") is not None:
         selected_image_ids = get_selected_coco_image_ids(val_loader.dataset)
-        evaluation_annotations = write_coco_annotation_subset(
-            annotation_path,
-            selected_image_ids,
-            output_dir / "instances_val_subset.json",
-        )
-        print(f"[eval] evaluating {len(selected_image_ids)} source image(s)", flush=True)
+        evaluation_annotations = output_dir / "instances_val_subset.json"
+        if is_main_process():
+            write_coco_annotation_subset(
+                annotation_path,
+                selected_image_ids,
+                evaluation_annotations,
+            )
+            print(
+                f"[eval] evaluating {len(selected_image_ids)} source image(s)",
+                flush=True,
+            )
+    elif is_main_process():
+        output_dir.mkdir(parents=True, exist_ok=True)
+    if is_distributed():
+        dist.barrier()
 
     max_dets = int(eval_cfg.get("max_dets", 100))
     postprocessor = PostProcessImage(
@@ -164,7 +193,11 @@ def evaluate(model: torch.nn.Module, cfg: Dict[str, Any], output_dir: Path, use_
     log_every = int(eval_cfg.get("log_every_batches", 20))
     total_batches = len(val_loader)
     for batch_index, batch in enumerate(val_loader, start=1):
-        if batch_index == 1 or batch_index % log_every == 0 or batch_index == total_batches:
+        if is_main_process() and (
+            batch_index == 1
+            or batch_index % log_every == 0
+            or batch_index == total_batches
+        ):
             print(f"[eval] batch={batch_index}/{total_batches}", flush=True)
         batch = move_to_student_device(batch, device, cfg)
         with torch.autocast(
@@ -182,13 +215,14 @@ def evaluate(model: torch.nn.Module, cfg: Dict[str, Any], output_dir: Path, use_
         dumper.update(find_stages=outputs, find_metadatas=batch.find_metadatas)
 
     metrics = dumper.compute_synced()
-    print(
-        "[eval] "
-        f"AP={float(metrics['coco_eval_bbox_AP']):.6f} "
-        f"AP50={float(metrics['coco_eval_bbox_AP_50']):.6f} "
-        f"AP75={float(metrics['coco_eval_bbox_AP_75']):.6f}",
-        flush=True,
-    )
+    if is_main_process():
+        print(
+            "[eval] "
+            f"AP={float(metrics['coco_eval_bbox_AP']):.6f} "
+            f"AP50={float(metrics['coco_eval_bbox_AP_50']):.6f} "
+            f"AP75={float(metrics['coco_eval_bbox_AP_75']):.6f}",
+            flush=True,
+        )
     return metrics
 
 
@@ -197,6 +231,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT_PATH)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument(
+        "--distributed",
+        action="store_true",
+        help="Enable multi-process evaluation; launch with torchrun.",
+    )
     parser.add_argument(
         "--amp",
         action="store_true",
@@ -210,5 +249,11 @@ if __name__ == "__main__":
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for this evaluation script.")
     cfg = load_config(args.config)
-    model = build_student_model(cfg, args.checkpoint, torch.device("cuda"))
-    evaluate(model, cfg, args.output_dir, use_amp=args.amp)
+    if args.distributed:
+        cfg.setdefault("multi_gpu", {})["enabled"] = True
+    device, _ = initialize_distributed(cfg)
+    try:
+        model = build_student_model(cfg, args.checkpoint, device)
+        evaluate(model, cfg, args.output_dir, use_amp=args.amp)
+    finally:
+        destroy_distributed()

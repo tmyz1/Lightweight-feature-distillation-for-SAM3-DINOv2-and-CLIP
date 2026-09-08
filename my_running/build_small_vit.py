@@ -1,117 +1,188 @@
-from pathlib import Path
+from __future__ import annotations
+
+import argparse
 import sys
-from typing import Tuple
+from pathlib import Path
+from typing import Any, Dict
 
+import matplotlib.pyplot as plt
 import torch
-from safetensors.torch import load_file
-
+import yaml
+from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from dinov2.models.vision_transformer import vit_small  # noqa: E402
-from sam3.model_builder import build_vit_small_image_model  # noqa: E402
+from KD.model.vit_small_patch14_reg4_dinov2 import build_vit_small_image_model
+from sam3.model.sam3_image_processor import Sam3Processor
+from sam3.visualization_utils import plot_results
 
 
-WEIGHT_PATH = Path(r"E:\reproduce\weights\DINO-V2\vit_small_patch14_reg4_dinov2.safetensors")
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "Config" / "Vit_Small_Distill.yaml"
+DEFAULT_STUDENT_CHECKPOINT = Path(
+    r"E:\reproduce\weights\sam3 distill\vit_small_patch14_reg4_dinov2 distill\best_student.pt"
+)
+DEFAULT_IMAGE_PATH = Path(r"E:\my_data\rf100-vl\apex-videogame\train\4_png_jpg.rf.23cd233ad6ae68291c2de556f76263b0.jpg")
+DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "my_running" / "outputs" / "small_vit_result.png"
 
 
-def build_dinov2_small_reg(
-    weight_path: Path = WEIGHT_PATH,
-    device: torch.device | str = "cuda" if torch.cuda.is_available() else "cpu",
+def load_config(path: Path) -> Dict[str, Any]:
+    with path.open("r", encoding="utf-8") as file:
+        return yaml.safe_load(file)
+
+
+def load_student_state_dict(path: Path) -> Dict[str, torch.Tensor]:
+    if not path.is_file():
+        raise FileNotFoundError(f"Student checkpoint does not exist: {path}")
+
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    if isinstance(checkpoint, dict) and "student_model" in checkpoint:
+        checkpoint = checkpoint["student_model"]
+    if not isinstance(checkpoint, dict):
+        raise TypeError(f"Unsupported student checkpoint format: {type(checkpoint)}")
+    return checkpoint
+
+
+def build_distilled_vit_small(
+    cfg: Dict[str, Any],
+    student_checkpoint_path: Path,
+    device: torch.device,
 ) -> torch.nn.Module:
-    model = vit_small(
-        img_size=518,
-        patch_size=14,
-        init_values=1.0,
-        ffn_layer="mlp",
-        block_chunks=0,
-        num_register_tokens=4,
-        interpolate_antialias=True,
-        interpolate_offset=0.0,
+    student_cfg = cfg.get("Student", {})
+    sam3_cfg = cfg.get("Sam3", {})
+
+    model = build_vit_small_image_model(
+        bpe_path=sam3_cfg.get("bpe_path"),
+        checkpoint_path=sam3_cfg.get("checkpoint_path"),
+        device=str(device),
+        eval_mode=True,
+        enable_segmentation=bool(student_cfg.get("enable_segmentation", True)),
+        enable_inst_interactivity=False,
+        vit_small_checkpoint_path=student_cfg.get("vit_small_checkpoint_path"),
+        return_interm_layers=bool(
+            cfg.get("train", {}).get("return_interm_layers", False)
+        ),
+        vit_small_intermediate_layers=student_cfg.get(
+            "vit_small_intermediate_layers", (2, 5, 8, 11)
+        ),
+        cfg=cfg,
     )
-    state_dict = load_file(str(weight_path), device="cpu")
-    if "reg_token" in state_dict and "register_tokens" not in state_dict:
-        state_dict["register_tokens"] = state_dict.pop("reg_token")
-    if (
-        "pos_embed" in state_dict
-        and state_dict["pos_embed"].shape[1] + 1 == model.pos_embed.shape[1]
-    ):
-        cls_pos_embed = model.pos_embed[:, :1].detach().clone()
-        state_dict["pos_embed"] = torch.cat((cls_pos_embed, state_dict["pos_embed"]), dim=1)
-    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
-    if missing_keys or unexpected_keys:
-        print(f"missing_keys={len(missing_keys)} unexpected_keys={len(unexpected_keys)}")
-        if missing_keys:
-            print(f"missing examples: {missing_keys[:5]}")
-        if unexpected_keys:
-            print(f"unexpected examples: {unexpected_keys[:5]}")
+
+    student_state = load_student_state_dict(student_checkpoint_path)
+    missing_keys, unexpected_keys = model.load_state_dict(student_state, strict=False)
+
+    allowed_missing = {
+        "backbone.vision_backbone.layer_fusion_logits",
+    }
+    invalid_missing = [
+        key
+        for key in missing_keys
+        if not key.startswith("segmentation_head.") and key not in allowed_missing
+    ]
+    invalid_unexpected = [
+        key for key in unexpected_keys if key not in allowed_missing
+    ]
+    if invalid_missing or invalid_unexpected:
+        raise RuntimeError(
+            "Student checkpoint was not loaded cleanly. "
+            f"Missing: {invalid_missing[:10]}; "
+            f"unexpected: {invalid_unexpected[:10]}."
+        )
+    if missing_keys:
+        print(f"[checkpoint] allowed missing keys: {missing_keys[:10]}")
+    if unexpected_keys:
+        print(f"[checkpoint] ignored unexpected keys: {unexpected_keys[:10]}")
+
     model.to(device)
     model.eval()
     return model
 
 
-@torch.no_grad()
-def output_last_cls_reg_pos(
+@torch.inference_mode()
+def run_inference(
     model: torch.nn.Module,
-    image: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    features = model.forward_features(image)
-    cls_token = features["x_norm_clstoken"]
-    reg_token = features["x_norm_regtokens"]
+    image_path: Path,
+    prompt: str,
+    resolution: int,
+    confidence_threshold: float,
+    output_path: Path,
+    use_amp: bool,
+) -> None:
+    if not image_path.is_file():
+        raise FileNotFoundError(f"Image does not exist: {image_path}")
 
-    patch_tokens = model.patch_embed(image)
-    token_input = torch.cat((model.cls_token.expand(image.shape[0], -1, -1), patch_tokens), dim=1)
-    pos_embed = model.interpolate_pos_encoding(token_input, image.shape[-2], image.shape[-1])
-    return cls_token, reg_token, pos_embed
+    image = Image.open(image_path).convert("RGB")
+    processor = Sam3Processor(
+        model,
+        resolution=resolution,
+        device="cuda" if next(model.parameters()).is_cuda else "cpu",
+        confidence_threshold=confidence_threshold,
+    )
 
-
-@torch.no_grad()
-def output_backbone_feature_map(
-    model: torch.nn.Module,
-    image: torch.Tensor,
-) -> torch.Tensor:
-    features = model.forward_features(image)
-    patch_tokens = features["x_norm_patchtokens"]
-    batch_size, num_patches, channels = patch_tokens.shape
-    patch_h = image.shape[-2] // model.patch_size
-    patch_w = image.shape[-1] // model.patch_size
-    if num_patches != patch_h * patch_w:
-        raise ValueError(
-            f"patch token number {num_patches} does not match image grid {patch_h}x{patch_w}"
+    amp_enabled = use_amp and next(model.parameters()).is_cuda
+    with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
+        inference_state = processor.set_image(image)
+        inference_state = processor.set_text_prompt(
+            state=inference_state,
+            prompt=prompt,
         )
-    return patch_tokens.reshape(batch_size, patch_h, patch_w, channels).permute(0, 3, 1, 2).contiguous()
+
+    scores = inference_state.get("scores")
+    num_objects = 0 if scores is None else int(scores.numel())
+    print(f"found {num_objects} object(s)")
+    if scores is not None and scores.numel() > 0:
+        print(f"scores: {scores.detach().float().cpu().tolist()}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plot_results(image, inference_state)
+    plt.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close()
+    print(f"saved to: {output_path}")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run distilled ViT-Small SAM3 demo.")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_STUDENT_CHECKPOINT)
+    parser.add_argument("--image", type=Path, default=DEFAULT_IMAGE_PATH)
+    parser.add_argument("--prompt", default="people")
+    parser.add_argument("--resolution", type=int, default=None)
+    parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--amp",
+        action="store_true",
+        help="Run inference with CUDA bfloat16 autocast. Disabled by default.",
+    )
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
+    return parser.parse_args()
 
 
 def main() -> None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = build_dinov2_small_reg(device=device)
-    image = torch.randn(1, 3, 518, 518, device=device)
+    args = parse_args()
+    cfg = load_config(args.config)
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is required for this demo.")
 
-    cls_token, reg_token, pos_embed = output_last_cls_reg_pos(model, image)
-    backbone_feature = output_backbone_feature_map(model, image)
-
-    print(f"image: {tuple(image.shape)}")
-    print(f"cls_token: {tuple(cls_token.shape)}")
-    print(f"reg_token: {tuple(reg_token.shape)}")
-    print(f"pos_embed: {tuple(pos_embed.shape)}")
-    print(f"backbone_feature: {tuple(backbone_feature.shape)}")
-
-    sam3_model = build_vit_small_image_model(
-        device=str(device),
-        eval_mode=True,
-        checkpoint_path=None,
-        enable_segmentation=False,
+    device = torch.device("cuda")
+    resolution = int(
+        args.resolution
+        or cfg.get("Student", {}).get(
+            "kd_resolution",
+            cfg.get("dataset", {}).get("resolution", 1008),
+        )
     )
-    with torch.no_grad():
-        raw_features, _, _, _ = sam3_model.backbone.vision_backbone(image)
-        sam3_backbone_out = sam3_model.backbone.forward_image(image)
-    raw_fpn_shapes = [tuple(feature.shape) for feature in raw_features]
-    fpn_shapes = [tuple(feature.shape) for feature in sam3_backbone_out["backbone_fpn"]]
-    print(f"sam3_vit_small_raw_neck_fpn: {raw_fpn_shapes}")
-    print(f"sam3_vit_small_backbone_fpn: {fpn_shapes}")
-    print(f"sam3_vit_small_vision_features: {tuple(sam3_backbone_out['vision_features'].shape)}")
+
+    model = build_distilled_vit_small(cfg, args.checkpoint, device)
+    run_inference(
+        model=model,
+        image_path=args.image,
+        prompt=args.prompt,
+        resolution=resolution,
+        confidence_threshold=args.threshold,
+        output_path=args.output,
+        use_amp=args.amp,
+    )
 
 
 if __name__ == "__main__":
