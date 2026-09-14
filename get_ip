@@ -6,10 +6,13 @@ export https_proxy=http://10.9.50.94:7897
 CUDA_VISIBLE_DEVICES=3 python KD/main.py   --config "/workspace/Vision Distillation/Config/Vit_Samell_Distill_server.yaml"   --output "/workspace/Vision Distillation/output/eval"
 
 # 多卡运行
-CUDA_VISIBLE_DEVICES=1,2,3,4 \
-torchrun --standalone --nproc_per_node=4 KD/main.py \
-  --config "/workspace/Vision Distillation/Config/Vit_Samell_Distill_server.yaml" \
-  --output "/workspace/Vision Distillation/output/eval"
+CUDA_VISIBLE_DEVICES=1,2,3,4 torchrun --standalone --nproc_per_node=4 KD/main.py   --config "/workspace/Vision Distillation/Config/Vit_Small_Distill_server.yaml"   --output "/workspace/Vision Distillation output/eval"
 
 #查看显卡实时使用情况
 watch -n 1 nvidia-smi
+
+Vision Distillation output/coco eval/latest_student.pt
+
+pip uninstall -y opencv-python opencv-contrib-python
+pip install opencv-python-headless
+pip install "setuptools==70.3.0"

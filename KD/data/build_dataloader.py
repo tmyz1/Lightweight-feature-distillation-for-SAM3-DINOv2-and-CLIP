@@ -318,6 +318,14 @@ def build_split_dataloader(
         )
     else:
         img_folder, ann_file = resolve_split_paths(root, split)
+        if training:
+            coco_json_loader = COCO_FROM_JSON
+        else:
+            coco_json_loader = partial(
+                COCO_FROM_JSON,
+                include_negatives=True,
+                category_chunk_size=eval_category_chunk_size,
+            )
         dataset = Sam3ImageDataset(
             img_folder=str(img_folder),
             ann_file=str(ann_file),
@@ -329,15 +337,7 @@ def build_split_dataloader(
             max_val_queries=50000,
             training=training,
             use_caching=False,
-            coco_json_loader=(
-                COCO_FROM_JSON
-                if training
-                else partial(
-                    COCO_FROM_JSON,
-                    include_negatives=True,
-                    category_chunk_size=eval_category_chunk_size,
-                )
-            ),
+            coco_json_loader=coco_json_loader,
             limit_ids=None,
         )
         if limit_ids is not None:
