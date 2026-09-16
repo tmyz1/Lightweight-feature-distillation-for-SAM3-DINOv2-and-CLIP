@@ -9,14 +9,10 @@ multi_gpu:
   find_unused_parameters: false
 
 dataset:
-  type: "coco"
-  root: "F:/data/OpenDataLab___LVIS_v1_dot_0/raw/LVIS_v1.0"
-  train_type: "coco"
-  val_type: "coco"
+  root: "F:/data/SA-1B/test/sa1b"
   val_root: "E:/my_data/COCO"
-  train_split: "train2017"
+  train_split: "sa_000000"
   val_split: "val2017"
-  sa1b_train_shards: null
   eval_category_chunk_size: 2
   train_subset_seed: 0
   val_subset_seed: 0
@@ -100,7 +96,7 @@ loss:
     smooth_l1: 0.5
 
 train:
-  max_steps: 2
+  max_steps: 10
   eval_every_steps: 1
   log_every_batches: 50
   amp: true

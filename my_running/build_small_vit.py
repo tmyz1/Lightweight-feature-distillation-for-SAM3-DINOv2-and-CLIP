@@ -21,10 +21,10 @@ from sam3.visualization_utils import plot_results
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "Config" / "Vit_Small_Distill.yaml"
 DEFAULT_STUDENT_CHECKPOINT = Path(
-    r"E:\reproduce\weights\sam3 distill\vit_small_patch14_reg4_dinov2 distill\training with sa1b.pt"
+    r"E:\reproduce\weights\sam3 distill\vit_small_patch14_reg4_dinov2 distill\training with coco.pt"
 )
-DEFAULT_IMAGE_PATH = Path(r"F:\data\SA-1B\sa_000005\sa_55972.jpg")
-DEFAULT_PROMPT_TEXT = "hat"
+DEFAULT_IMAGE_PATH = Path(r"E:\pycharm\sam3-main\sam3-main\sam3-main\assets\images\test_image.jpg")
+DEFAULT_PROMPT_TEXT = "The person on the far left"
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "my_running" / "outputs" / "small_vit_result.png"
 
 
@@ -149,7 +149,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image", type=Path, default=DEFAULT_IMAGE_PATH)
     parser.add_argument("--prompt", default=DEFAULT_PROMPT_TEXT)
     parser.add_argument("--resolution", type=int, default=None)
-    parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument("--threshold", type=float, default=0.6)
     parser.add_argument(
         "--amp",
         action="store_true",

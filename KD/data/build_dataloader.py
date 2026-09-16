@@ -41,8 +41,6 @@ from sam3.train.transforms.filter_query_transforms import (
 from sam3.train.transforms.point_sampling import RandomizeInputBbox
 from sam3.train.transforms.segmentation import DecodeRle
 
-from KD.data.SA_1B import build_sa1b_dataset, is_sa1b_dataset
-
 
 def get_split_root(dataset_cfg: Dict[str, Any], training: bool) -> Path:
     """Use an optional independent root for COCO validation data."""
@@ -299,59 +297,41 @@ def build_split_dataloader(
         else build_val_transforms(resolution)
     )
     split_name = "train" if training else "val"
-    if is_sa1b_dataset(dataset_cfg, training=training):
+    img_folder, ann_file = resolve_split_paths(root, split)
+    if training:
+        coco_json_loader = COCO_FROM_JSON
+    else:
+        coco_json_loader = partial(
+            COCO_FROM_JSON,
+            include_negatives=True,
+            category_chunk_size=eval_category_chunk_size,
+        )
+    dataset = Sam3ImageDataset(
+        img_folder=str(img_folder),
+        ann_file=str(ann_file),
+        transforms=transforms,
+        load_segmentation=enable_segmentation,
+        max_ann_per_img=500000,
+        multiplier=1,
+        max_train_queries=50000,
+        max_val_queries=50000,
+        training=training,
+        use_caching=False,
+        coco_json_loader=coco_json_loader,
+        limit_ids=None,
+    )
+    if limit_ids is not None:
         subset_seed = get_subset_seed(
             dataset_cfg,
             split_name,
-            default_seed=None if training else 0,
+            default_seed=None if training else len(dataset.coco._raw_data),
         )
-        shard_key = "sa1b_train_shards" if training else "sa1b_val_shards"
-        dataset = build_sa1b_dataset(
-            root=root,
-            transforms=transforms,
-            load_segmentation=enable_segmentation,
-            training=training,
-            max_ann_per_img=500000,
-            max_images=None if limit_ids is None else int(limit_ids),
-            subset_seed=subset_seed,
-            shard_names=dataset_cfg.get(shard_key, dataset_cfg.get("sa1b_shards")),
+        limit_dataset_to_images(
+            dataset,
+            int(limit_ids),
+            split_name,
+            subset_seed,
         )
-    else:
-        img_folder, ann_file = resolve_split_paths(root, split)
-        if training:
-            coco_json_loader = COCO_FROM_JSON
-        else:
-            coco_json_loader = partial(
-                COCO_FROM_JSON,
-                include_negatives=True,
-                category_chunk_size=eval_category_chunk_size,
-            )
-        dataset = Sam3ImageDataset(
-            img_folder=str(img_folder),
-            ann_file=str(ann_file),
-            transforms=transforms,
-            load_segmentation=enable_segmentation,
-            max_ann_per_img=500000,
-            multiplier=1,
-            max_train_queries=50000,
-            max_val_queries=50000,
-            training=training,
-            use_caching=False,
-            coco_json_loader=coco_json_loader,
-            limit_ids=None,
-        )
-        if limit_ids is not None:
-            subset_seed = get_subset_seed(
-                dataset_cfg,
-                split_name,
-                default_seed=None if training else len(dataset.coco._raw_data),
-            )
-            limit_dataset_to_images(
-                dataset,
-                int(limit_ids),
-                split_name,
-                subset_seed,
-            )
 
     if distributed is None:
         distributed = bool(cfg.get("multi_gpu", {}).get("enabled", False))
