@@ -162,20 +162,7 @@ def student_and_teacher_features_loss(
     for i in range(len(student_features)):
         student_feature = student_features[i]
         teacher_feature = teacher_features[i]
-        w,h = student_feature.shape[-2:]
-        if loss_type == 'mse':
-            compatible_correlation_shapes = (
-                student_feature.ndim == teacher_feature.ndim == 4
-                and student_feature.shape[0] == teacher_feature.shape[0]
-                and student_feature.shape[-2:] == teacher_feature.shape[-2:]
-            )
-            if not compatible_correlation_shapes:
-                raise ValueError(
-                    "Correlation loss requires student and teacher features "
-                    "with matching [B, H, W] dimensions, got "
-                    f"{student_feature.shape} and {teacher_feature.shape}."
-                )
-        elif student_feature.shape != teacher_feature.shape:
+        if student_feature.shape != teacher_feature.shape:
             raise ValueError(
                 f"student_feature {student_feature.shape} is different from "
                 f"teacher_feature {teacher_feature.shape}"
@@ -192,37 +179,6 @@ def student_and_teacher_features_loss(
                     f"feature shape {tuple(student_feature.shape)}."
                 )
 
-        if loss_type == 'mse':
-            if w > 100 or h > 100:
-                continue
-            student_tokens = F.normalize(
-                student_feature.float(), p=2, dim=1
-            ).flatten(-2, -1)
-            teacher_tokens = F.normalize(
-                teacher_feature.float(), p=2, dim=1
-            ).flatten(-2, -1)
-
-            if valid_mask is None:
-                student_corr = student_tokens.transpose(-2, -1) @ student_tokens
-                teacher_corr = teacher_tokens.transpose(-2, -1) @ teacher_tokens
-                losses += F.mse_loss(student_corr, teacher_corr)
-                continue
-
-            valid_tokens = valid_mask[:, 0].reshape(student_feature.shape[0], -1) > 0.5
-            per_image_losses = []
-            for batch_index in range(student_feature.shape[0]):
-                token_mask = valid_tokens[batch_index]
-                if not torch.any(token_mask):
-                    per_image_losses.append(student_feature[batch_index].sum() * 0.0)
-                    continue
-                student_valid_tokens = student_tokens[batch_index, :, token_mask]
-                teacher_valid_tokens = teacher_tokens[batch_index, :, token_mask]
-                student_corr = student_valid_tokens.transpose(0, 1) @ student_valid_tokens
-                teacher_corr = teacher_valid_tokens.transpose(0, 1) @ teacher_valid_tokens
-                per_image_losses.append(F.mse_loss(student_corr, teacher_corr))
-            losses += torch.stack(per_image_losses).mean()
-            continue
-
         # Keep the channel dimension reduction independent from the valid-area
         # reduction, so every loss ignores the same padded feature cells.
         if loss_type == 'cosine':
@@ -233,7 +189,7 @@ def student_and_teacher_features_loss(
             per_pixel_loss = F.l1_loss(
                 student_feature, teacher_feature, reduction='none'
             ).mean(dim=1)
-        elif loss_type == 'l2':
+        elif loss_type in ('l2', 'mse'):
             per_pixel_loss = F.mse_loss(
                 student_feature, teacher_feature, reduction='none'
             ).mean(dim=1)

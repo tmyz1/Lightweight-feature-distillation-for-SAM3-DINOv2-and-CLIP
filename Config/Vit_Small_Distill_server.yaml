@@ -9,13 +9,13 @@ multi_gpu:
   find_unused_parameters: True
 
 dataset:
-  root: "/data/db1/coco"
+  root: "/data/db1/sa1b"
   val_root: "/data/db1/coco"
-  train_split: "train2017"
+  train_split: "images"
   val_split: "val2017"
   eval_category_chunk_size: 4
   train_num_images: null
-  val_num_images: null
+  val_num_images: 100
   max_objects_per_query: 800
   resolution: 1008
   num_workers: 16
@@ -94,7 +94,7 @@ loss:
     smooth_l1: 0.5
 
 train:
-  max_steps: 20
+  max_steps: 12
   eval_every_steps: 1
   log_every_batches: 50
   amp: true
