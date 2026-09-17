@@ -3,6 +3,7 @@ https://huggingface.co/timm/vit_small_patch14_reg4_dinov2.lvd142m 预训练权�
 """
 import sys
 from copy import deepcopy
+from pathlib import Path
 from typing import List, Tuple, Optional, Sequence, Dict, Any
 
 import pkg_resources
@@ -10,6 +11,7 @@ import torch
 from safetensors.torch import load_file
 from torch import nn
 from torch.nn import functional as F
+from torchvision.utils import save_image
 
 from dinov2.layers.attention import Attention, MemEffAttention
 from dinov2.models.vision_transformer import vit_small as dinov2_vit_small
@@ -18,7 +20,28 @@ from sam3.model.sam1_task_predictor import SAM3InteractiveImagePredictor
 from sam3.model_builder import _create_position_encoding, _create_text_encoder, _create_vl_backbone, \
     _create_sam3_transformer, _create_dot_product_scoring, _create_segmentation_head, _create_geometry_encoder, \
     build_tracker, _create_sam3_model, _setup_device_and_mode, _load_checkpoint
+def save_debug_batch(
+    batch,
+    output_dir: Path,
+    step: int,
+    batch_idx: int,
+    max_images: int = 4,
+):
+    """Save original images and normalized model inputs for debugging."""
 
+    vis_dir = output_dir / "debug_images"
+    vis_dir.mkdir(parents=True, exist_ok=True)
+
+    # 保存实际输入模型的图片
+    images = batch.img_batch.detach().float().cpu()
+    images = (images * 0.5 + 0.5).clamp(0, 1)
+    images = images[:max_images]
+
+    save_image(
+        images,
+        str(vis_dir / f"step_{step}_batch_{batch_idx}_input.png"),
+        nrow=min(images.shape[0], 4),
+    )
 
 #预训练权重加载函数
 def _load_vit_small_pretrained(model: nn.Module, checkpoint_path: str):

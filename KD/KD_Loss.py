@@ -1,3 +1,4 @@
+import sys
 from typing import List, Dict, Optional, Any, Sequence
 from dataclasses import dataclass
 import torch
@@ -132,50 +133,6 @@ def mask_distillation_loss(
     total_loss = sum(losses.values())
     return total_loss, {"total_loss": total_loss, **losses}
 
-"""
-逐像素的特征mse损失计算
-"""
-def pixel_wise_mse_features_loss(
-        student_features: Sequence[torch.Tensor],
-        teacher_features: Sequence[torch.Tensor],
-        valid_masks: Optional[Sequence[torch.Tensor]] = None,
-        avg: bool = True,
-) -> torch.Tensor:
-    """Compute MSE on valid feature cells and give every image equal weight."""
-    if len(student_features) != len(teacher_features):
-        raise ValueError(
-            "Student and teacher feature lists must have the same number of layers."
-        )
-
-    if valid_masks is not None and len(valid_masks) != len(student_features):
-        raise ValueError("valid_masks must match the number of feature layers.")
-    layer_losses = []
-    for index, (student_feature, teacher_feature) in enumerate(
-            zip(student_features, teacher_features)
-    ):
-        if student_feature.shape != teacher_feature.shape:
-            raise ValueError(
-                f"student feature {tuple(student_feature.shape)} does not match "
-                f"teacher feature {tuple(teacher_feature.shape)}."
-            )
-
-        per_pixel_mse = (student_feature.float() - teacher_feature.float()).square()
-        per_pixel_mse = per_pixel_mse.mean(dim=1)
-        valid_mask = None if valid_masks is None else valid_masks[index]
-        if valid_mask is None:
-            layer_losses.append(per_pixel_mse.mean())
-            continue
-
-        valid_mask = valid_mask[:, 0].to(
-            device=per_pixel_mse.device, dtype=per_pixel_mse.dtype
-        )
-        per_image_loss = (per_pixel_mse * valid_mask).flatten(1).sum(dim=1)
-        per_image_loss = per_image_loss / valid_mask.flatten(1).sum(dim=1).clamp_min(1)
-        layer_losses.append(per_image_loss.mean())
-
-    total_loss = torch.stack(layer_losses).sum()
-    return total_loss / len(layer_losses) if avg else total_loss
-
 def student_and_teacher_features_loss(
         student_features: List,
         teacher_features: List,
@@ -192,26 +149,37 @@ def student_and_teacher_features_loss(
     vaild_masks: mask用来表示哪一些部分包含了图像的padding
     """
     if len(student_features) != len(teacher_features):
-        assert f'student features length {len(student_features)} is different from teacher features length {len(teacher_features)} '
+        raise ValueError(
+            f"student features length {len(student_features)} is different from "
+            f"teacher features length {len(teacher_features)}"
+        )
 
     if valid_masks is not None and len(valid_masks) != len(student_features):
         raise ValueError("valid_masks must match the number of feature layers.")
-
-    if loss_type == 'mse':
-        return pixel_wise_mse_features_loss(
-            student_features,
-            teacher_features,
-            valid_masks=valid_masks,
-            avg=avg,
-        )
 
     losses = 0
 
     for i in range(len(student_features)):
         student_feature = student_features[i]
         teacher_feature = teacher_features[i]
-        if student_feature.shape != teacher_feature.shape:
-            assert f'student_feature {student_feature.shape} is different from teacher_feature {teacher_feature.shape} '
+        w,h = student_feature.shape[-2:]
+        if loss_type == 'mse':
+            compatible_correlation_shapes = (
+                student_feature.ndim == teacher_feature.ndim == 4
+                and student_feature.shape[0] == teacher_feature.shape[0]
+                and student_feature.shape[-2:] == teacher_feature.shape[-2:]
+            )
+            if not compatible_correlation_shapes:
+                raise ValueError(
+                    "Correlation loss requires student and teacher features "
+                    "with matching [B, H, W] dimensions, got "
+                    f"{student_feature.shape} and {teacher_feature.shape}."
+                )
+        elif student_feature.shape != teacher_feature.shape:
+            raise ValueError(
+                f"student_feature {student_feature.shape} is different from "
+                f"teacher_feature {teacher_feature.shape}"
+            )
 
         valid_mask = None if valid_masks is None else valid_masks[i]
         if valid_mask is not None:
@@ -223,46 +191,69 @@ def student_and_teacher_features_loss(
                     f"valid mask shape {tuple(valid_mask.shape)} does not match "
                     f"feature shape {tuple(student_feature.shape)}."
                 )
-            if loss_type == 'cosine':
-                per_pixel_loss = 1.0 - F.cosine_similarity(
-                    student_feature, teacher_feature, dim=1
-                )
-            elif loss_type == 'l1':
-                per_pixel_loss = F.l1_loss(
-                    student_feature, teacher_feature, reduction='none'
-                ).mean(dim=1)
-            elif loss_type == 'l2':
-                per_pixel_loss = F.mse_loss(
-                    student_feature, teacher_feature, reduction='none'
-                ).mean(dim=1)
-            elif loss_type == 'smooth_l1':
-                per_pixel_loss = F.smooth_l1_loss(
-                    student_feature, teacher_feature, reduction='none'
-                ).mean(dim=1)
-            else:
-                raise ValueError(f'{loss_type} is invalid loss type')
+
+        if loss_type == 'mse':
+            if w > 100 or h > 100:
+                continue
+            student_tokens = F.normalize(
+                student_feature.float(), p=2, dim=1
+            ).flatten(-2, -1)
+            teacher_tokens = F.normalize(
+                teacher_feature.float(), p=2, dim=1
+            ).flatten(-2, -1)
+
+            if valid_mask is None:
+                student_corr = student_tokens.transpose(-2, -1) @ student_tokens
+                teacher_corr = teacher_tokens.transpose(-2, -1) @ teacher_tokens
+                losses += F.mse_loss(student_corr, teacher_corr)
+                continue
+
+            valid_tokens = valid_mask[:, 0].reshape(student_feature.shape[0], -1) > 0.5
+            per_image_losses = []
+            for batch_index in range(student_feature.shape[0]):
+                token_mask = valid_tokens[batch_index]
+                if not torch.any(token_mask):
+                    per_image_losses.append(student_feature[batch_index].sum() * 0.0)
+                    continue
+                student_valid_tokens = student_tokens[batch_index, :, token_mask]
+                teacher_valid_tokens = teacher_tokens[batch_index, :, token_mask]
+                student_corr = student_valid_tokens.transpose(0, 1) @ student_valid_tokens
+                teacher_corr = teacher_valid_tokens.transpose(0, 1) @ teacher_valid_tokens
+                per_image_losses.append(F.mse_loss(student_corr, teacher_corr))
+            losses += torch.stack(per_image_losses).mean()
+            continue
+
+        # Keep the channel dimension reduction independent from the valid-area
+        # reduction, so every loss ignores the same padded feature cells.
+        if loss_type == 'cosine':
+            per_pixel_loss = 1.0 - F.cosine_similarity(
+                student_feature, teacher_feature, dim=1
+            )
+        elif loss_type == 'l1':
+            per_pixel_loss = F.l1_loss(
+                student_feature, teacher_feature, reduction='none'
+            ).mean(dim=1)
+        elif loss_type == 'l2':
+            per_pixel_loss = F.mse_loss(
+                student_feature, teacher_feature, reduction='none'
+            ).mean(dim=1)
+        elif loss_type == 'smooth_l1':
+            per_pixel_loss = F.smooth_l1_loss(
+                student_feature, teacher_feature, reduction='none'
+            ).mean(dim=1)
+        else:
+            raise ValueError(f'{loss_type} is invalid loss type')
+
+        if valid_mask is not None:
             valid_mask = valid_mask[:, 0].to(
                 device=per_pixel_loss.device, dtype=per_pixel_loss.dtype
             )
-            losses += (
-                (per_pixel_loss * valid_mask).sum()
-                / valid_mask.sum().clamp_min(1)
-            )
+            per_image_loss = (per_pixel_loss * valid_mask).flatten(1).sum(dim=1)
+            per_image_loss = per_image_loss / valid_mask.flatten(1).sum(dim=1).clamp_min(1)
+            losses += per_image_loss.mean()
             continue
 
-        loss = -1
-        if loss_type == 'cosine':
-            loss = 1.0 - F.cosine_similarity(student_feature, teacher_feature, dim=1).mean() #dim = 1 -> [B,C,H,W] 中的C
-        if loss_type == 'l1':
-            loss = F.l1_loss(student_feature, teacher_feature)
-        if loss_type == 'l2':
-            loss = F.mse_loss(student_feature, teacher_feature)
-        if loss_type == 'smooth_l1':
-            loss = F.smooth_l1_loss(student_feature, teacher_feature)
-        if loss == -1:
-            assert f'{loss_type} is invalid loss type'
-
-        losses += loss
+        losses += per_pixel_loss.mean()
 
     if avg:
         return losses / len(student_features)

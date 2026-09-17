@@ -1,7 +1,7 @@
 device: "cuda"
 
 distillation:
-  teacher_mode: "sam3_dino_v2_clip"
+  teacher_mode: "sam3"
 
 multi_gpu:
   enabled: false
@@ -43,7 +43,7 @@ Sam3:
   sam3_intermediate_layers: [7,15,23,31]
 
 CLIP:
-  is_use: True
+  is_use: False
   checkpoint_path: "E:/reproduce/weights/CLIP/ViT-L-14.pt"
   bpe_path: "E:/pycharm/sam3-main/sam3-main/sam3-main/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
   device: "cuda"
@@ -51,7 +51,7 @@ CLIP:
   clip_intermediate_layers: [5,11,17,23]
 
 DINO_V2:
-  is_use: True
+  is_use: False
   checkpoint: "E:/reproduce/weights/DINO-V2/dinov2_vitl14_reg4_pretrain.pth"
   bpe_path: "E:/pycharm/sam3-main/sam3-main/sam3-main/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
   device: "cuda"

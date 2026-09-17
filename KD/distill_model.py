@@ -121,11 +121,6 @@ class _BaseDistill(nn.Module):
         #build adapter
         adapter_cfg = self.cfg.get("Adapter")
         student_feature_layers = self.Student.num_feature_layers
-        teacher_feature_layers = {
-            "SAM3": self.Sam3.num_feature_layers,
-            "DINO-V2": self.Dino_v2.num_feature_layers if self.Dino_v2 else None,
-            "CLIP": self.CLIP.num_feature_layers if self.CLIP else None,
-        }
 
         self.student_channels: List[int] = expand_per_layer_config(
             adapter_cfg.get("student_channel"), student_feature_layers, "student_channel"
@@ -229,7 +224,6 @@ class _BaseDistill(nn.Module):
         sam3_teacher_necks = detach_teacher_tensors(sam3_necks)
 
         #Align student model features with teacher model features
-        student_to_sam3_features = self.sam3_adapter(student_features_float,sam3_teacher_features)
         if self.Dino_v2:
             student_to_dino_v2_features = self.Dino_v2_adapter(student_features_float,dino_features)
         if self.CLIP:
@@ -252,9 +246,6 @@ class _BaseDistill(nn.Module):
         valid_boxes = getattr(batch, "kd_valid_boxes", None)
         if not bool(loss_cfg.get("mask_sam3_padding", True)):
             valid_boxes = None
-        sam3_feature_valid_masks = build_feature_valid_masks(
-            valid_boxes, sam3_teacher_features
-        )
         sam3_neck_valid_masks = build_feature_valid_masks(
             valid_boxes, sam3_teacher_necks
         )
@@ -268,14 +259,6 @@ class _BaseDistill(nn.Module):
             if self.CLIP:
                 student_to_clip_cls_tokens = self.CLIP_cls_adapter(student_cls_tokens, clip_cls_tokens)
 
-        sam3_loss = features_total_loss(
-            student_features=student_to_sam3_features,
-            teacher_features=sam3_teacher_features,
-            losses_type=losses_type,
-            cfg=self.cfg,
-            avg=True,
-            valid_masks=sam3_feature_valid_masks,
-        )
         if self.Dino_v2:
             dino_v2_loss = features_total_loss(
                 student_features=student_to_dino_v2_features,
@@ -328,13 +311,15 @@ class _BaseDistill(nn.Module):
             "clip": float(loss_cfg.get("clip_features_weight", 0.15)) if self.CLIP else 0,
         }
         feature_weight_sum = sum(teacher_feature_weights.values())
-        # feature_loss = torch.zeros((), device=self.device)
-        feature_loss = sam3_loss["total_loss"] * teacher_feature_weights["sam3"]
+        feature_loss = torch.zeros((), device=self.device)
         if self.Dino_v2:
             feature_loss += dino_v2_loss["total_loss"] * teacher_feature_weights["dino_v2"]
         if self.CLIP:
             feature_loss += clip_loss["total_loss"] * teacher_feature_weights["clip"]
-        feature_loss = feature_loss / feature_weight_sum
+        if feature_loss == 0.0:
+            feature_loss = torch.zeros((), device=self.device)
+        else:
+            feature_loss = feature_loss / feature_weight_sum
         total_loss = (
             feature_loss * feature_loss_weight
             + neck_loss["total_loss"] * necks_loss_weight
@@ -346,8 +331,6 @@ class _BaseDistill(nn.Module):
             "avg_feature_loss": feature_loss,
             "neck_loss": neck_loss["total_loss"],
             "cls_token_loss": cls_tokens_loss,
-            "sam3_features_loss": sam3_loss["total_loss"],
-            "sam3_mse_loss": sam3_loss.get("mse", torch.zeros((), device=self.device)),
             "neck_mse_loss": neck_loss.get("mse", torch.zeros((), device=self.device)),
         }
         if self.Dino_v2:
