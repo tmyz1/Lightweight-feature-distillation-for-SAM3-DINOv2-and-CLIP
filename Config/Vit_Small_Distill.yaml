@@ -16,8 +16,8 @@ dataset:
   eval_category_chunk_size: 2
   train_subset_seed: 0
   val_subset_seed: 0
-  train_num_images: null
-  val_num_images: 100
+  train_num_images: 10
+  val_num_images: 1
   max_objects_per_query: 800
   resolution: 1008
   num_workers: 0
@@ -79,11 +79,11 @@ param_scheduler:
 
 loss:
   mask_sam3_padding: true
-  features_loss_weight: 0.1
-  necks_loss_weight: 0.9
+  features_loss_weight: 0.5
+  necks_loss_weight: 0.5
   cls_tokens_loss_weight: 0
   normalize_features: true
-  sam3_features_weight: 0
+  sam3_features_weight: 1.0
   dino_v2_features_weight: 0.5
   clip_features_weight: 0.5
   losses_type: ["cosine", "mse"]

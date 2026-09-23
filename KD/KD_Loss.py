@@ -2,9 +2,105 @@ import sys
 from typing import List, Dict, Optional, Any, Sequence
 from dataclasses import dataclass
 import torch
+from torch import nn
 from torch.nn import functional as F
 from sam3.train.loss.loss_fns import dice_loss, sigmoid_focal_loss
 
+class Generation_adapter(nn.Module):
+    def __init__(self,high_s,high_t):
+        super().__init__()
+        self.high_s = high_s
+        self.high_t = high_t
+        self.teacher_dims = self.high_t.shape[1]
+        self.mask_ratio = 0.5
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, self.teacher_dims))
+        self.generation = nn.Sequential(
+            nn.Conv2d(self.teacher_dims, self.teacher_dims, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(self.teacher_dims, self.teacher_dims, kernel_size=3, padding=1))
+
+    def forward(self, x, high_t):
+        batch_size, channels, height, width = x.shape
+        num_tokens = height * width
+
+        # [B,C,H,W] -> [B,N,C]
+        x = x.flatten(2).transpose(1, 2)
+        high_t = high_t.flatten(2).transpose(1, 2)
+
+        x, mask, ids_restore, ids_masked = self.random_masking(
+            x, self.mask_ratio
+        )
+
+        mask_tokens = self.mask_token.to(
+            device=x.device,
+            dtype=x.dtype,
+        ).expand(batch_size, num_tokens - x.shape[1], -1)
+
+        x = torch.cat([x, mask_tokens], dim=1)
+
+        x = torch.gather(
+            x,
+            dim=1,
+            index=ids_restore.unsqueeze(-1).expand(
+                -1, -1, channels
+            ),
+        )
+        x = x.transpose(1, 2).reshape(
+            batch_size, channels, height, width
+        )
+
+        # [B,C,H,W] -> [B,N,C]
+        x = self.generation(x).flatten(2).transpose(1, 2)
+
+        # mask: [B,N] -> [B,N,1]
+        token_mask = mask.unsqueeze(-1).to(
+            device=x.device,
+            dtype=x.dtype,
+        )
+
+        x = x * token_mask
+        high_t = high_t.to(x.dtype) * token_mask
+
+        # [B,N,C] -> [B,C,H,W]
+        x = x.transpose(1, 2).reshape(
+            batch_size, channels, height, width
+        )
+        high_t = high_t.transpose(1, 2).reshape(
+            batch_size, channels, height, width
+        )
+
+
+        return x, high_t
+
+
+    def random_masking(self, x, mask_ratio):
+        """
+        Perform per-sample random masking by per-sample shuffling.
+        Per-sample shuffling is done by argsort random noise.
+        x: [N, L, D], sequence
+        """
+        N, L, D = x.shape  # batch, length, dim
+        len_keep = int(L * (1 - mask_ratio))
+
+        noise = torch.rand(N, L, device=x.device)  # noise in [0, 1]
+
+        # sort noise for each sample
+        ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
+        ids_restore = torch.argsort(ids_shuffle, dim=1)
+
+        # keep the first subset
+        ids_keep = ids_shuffle[:, :len_keep]
+        ids_masked = ids_shuffle[:, len_keep:L]
+
+        x_keep = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
+
+        # generate the binary mask: 0 is keep, 1 is remove
+        mask = torch.ones([N, L], device=x.device)
+        mask[:, :len_keep] = 0
+        # unshuffle to get the binary mask
+        mask = torch.gather(mask, dim=1, index=ids_restore)
+
+        return x_keep, mask, ids_restore, ids_masked
 
 def strict_valid_region_mask(
         valid_boxes: torch.Tensor,
@@ -178,6 +274,12 @@ def student_and_teacher_features_loss(
                     f"valid mask shape {tuple(valid_mask.shape)} does not match "
                     f"feature shape {tuple(student_feature.shape)}."
                 )
+        if i == len(student_features) - 1 or i == len(student_features) - 2:
+            generation = Generation_adapter(
+                high_s = student_feature,
+                high_t = teacher_feature,
+            ).to(device=student_feature.device,dtype=student_feature.dtype)
+            student_feature, teacher_feature = generation(student_feature, teacher_feature)
 
         # Keep the channel dimension reduction independent from the valid-area
         # reduction, so every loss ignores the same padded feature cells.
@@ -267,6 +369,7 @@ def features_total_loss(
         cfg:Optional[Dict[str, Any]],
         avg:bool = True,
         valid_masks: Optional[Sequence[torch.Tensor]] = None,
+        feature_type: str = 'backbone'
 ) -> Dict[str, float]:
     """
     用于计算不同方法下得到的损失值，传入的losses_type是List类型，最后返回Dict类型
@@ -280,6 +383,23 @@ def features_total_loss(
     features_total_loss = 0
     if len(losses_type) == 0:
         assert f'loss_type with the length of 0'
+    if feature_type == 'neck':
+        s_list = []
+        t_list = []
+        m_list = []
+        for i in range(len(student_features)):
+            s_f = student_features[i]
+            t_f = teacher_features[i]
+            m = valid_masks[i]
+            B,C,H,W = s_f.shape
+            if H == 72 and W == 72:
+                s_list.append(s_f)
+                t_list.append(t_f)
+                m_list.append(m)
+                break
+        student_features = s_list
+        teacher_features = t_list
+        valid_masks = m_list
 
     for loss_type in losses_type:
         loss = student_and_teacher_features_loss(

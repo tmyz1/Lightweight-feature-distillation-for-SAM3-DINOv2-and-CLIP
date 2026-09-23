@@ -222,7 +222,7 @@ class _BaseDistill(nn.Module):
         loss_cfg = self.cfg.get("loss")
         sam3_teacher_features = detach_teacher_tensors(sam3_features)
         sam3_teacher_necks = detach_teacher_tensors(sam3_necks)
-
+        student_to_sam3_feature = self.sam3_adapter(student_features_float, sam3_teacher_features)
         #Align student model features with teacher model features
         if self.Dino_v2:
             student_to_dino_v2_features = self.Dino_v2_adapter(student_features_float,dino_features)
@@ -259,6 +259,14 @@ class _BaseDistill(nn.Module):
             if self.CLIP:
                 student_to_clip_cls_tokens = self.CLIP_cls_adapter(student_cls_tokens, clip_cls_tokens)
 
+        sam3_features_loss = features_total_loss(
+            student_features = student_to_sam3_feature,
+            teacher_features = detach_teacher_tensors(sam3_features),
+            losses_type = losses_type,
+            cfg = self.cfg,
+            avg = True
+        )
+
         if self.Dino_v2:
             dino_v2_loss = features_total_loss(
                 student_features=student_to_dino_v2_features,
@@ -282,6 +290,7 @@ class _BaseDistill(nn.Module):
             cfg=self.cfg,
             avg=True,
             valid_masks=sam3_neck_valid_masks,
+            feature_type="neck",
         )
 
         if use_cls_loss:
@@ -311,7 +320,10 @@ class _BaseDistill(nn.Module):
             "clip": float(loss_cfg.get("clip_features_weight", 0.15)) if self.CLIP else 0,
         }
         feature_weight_sum = sum(teacher_feature_weights.values())
-        feature_loss = torch.zeros((), device=self.device)
+        if sam3_teacher_features is None:
+            feature_loss = torch.zeros((), device=self.device)
+        else:
+            feature_loss = sam3_features_loss
         if self.Dino_v2:
             feature_loss += dino_v2_loss["total_loss"] * teacher_feature_weights["dino_v2"]
         if self.CLIP:
@@ -319,7 +331,7 @@ class _BaseDistill(nn.Module):
         if feature_loss == 0.0:
             feature_loss = torch.zeros((), device=self.device)
         else:
-            feature_loss = feature_loss / feature_weight_sum
+            feature_loss = feature_loss['total_loss'] / feature_weight_sum
         total_loss = (
             feature_loss * feature_loss_weight
             + neck_loss["total_loss"] * necks_loss_weight

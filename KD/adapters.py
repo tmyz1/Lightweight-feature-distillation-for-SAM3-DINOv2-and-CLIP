@@ -17,6 +17,16 @@ class LayerNorm2d(nn.Module):
         x = self.norm(x)
         return x.permute(0, 3, 1, 2).contiguous()
 
+class Linear2d(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, bias: bool = True):
+        super().__init__()
+        self.linear = nn.Linear(in_channels, out_channels, bias=bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.permute(0, 2, 3, 1)       # BCHW -> BHWC
+        x = self.linear(x)               # 对每个空间位置变换通道
+        return x.permute(0, 3, 1, 2).contiguous()
+
 
 class FeatureAlignAdapter(nn.Module):
     """
@@ -48,7 +58,7 @@ class FeatureAlignAdapter(nn.Module):
         self.align_corners = align_corners
 
         layers = [
-            nn.Conv2d(student_channel, teacher_channel, kernel_size=1, bias=True),
+            Linear2d(student_channel, teacher_channel, bias=True),
         ]
 
         if use_norm:
@@ -78,7 +88,6 @@ class FeatureAlignAdapter(nn.Module):
         """
         student: 学生网络特征图像
         teacher: 教师网络特征图像
-        target_hw: 目标尺寸，统一将学生网络特征图像和教师玩咯特诊图像统一成目标尺寸
         """
         if student.ndim != 4:
             raise ValueError(f"student must be [B, C, H, W], got {student.shape}")
