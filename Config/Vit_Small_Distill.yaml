@@ -81,6 +81,7 @@ loss:
   mask_sam3_padding: true
   features_loss_weight: 0.5
   necks_loss_weight: 0.5
+  logits_loss_weight: 10
   cls_tokens_loss_weight: 0
   normalize_features: true
   sam3_features_weight: 1.0

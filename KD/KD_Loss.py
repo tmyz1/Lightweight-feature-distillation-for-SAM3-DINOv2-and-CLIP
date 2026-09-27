@@ -235,6 +235,7 @@ def student_and_teacher_features_loss(
         loss_type:str = 'cosine',
         avg:bool = True,
         valid_masks: Optional[Sequence[torch.Tensor]] = None,
+        feature_type: str = 'feature',
 ):
     """
     用于计算学生网络和教师网络在特征层面上的损失
@@ -274,7 +275,7 @@ def student_and_teacher_features_loss(
                     f"valid mask shape {tuple(valid_mask.shape)} does not match "
                     f"feature shape {tuple(student_feature.shape)}."
                 )
-        if i == len(student_features) - 1 or i == len(student_features) - 2:
+        if feature_type == 'backbone' and (i == len(student_features) - 1 or i == len(student_features) - 2):
             generation = Generation_adapter(
                 high_s = student_feature,
                 high_t = teacher_feature,
@@ -408,6 +409,7 @@ def features_total_loss(
             loss_type,
             avg,
             valid_masks,
+            feature_type
         )
         losses[loss_type] = loss
         weight = cfg.get('loss',{}).get('features_loss', {}).get(loss_type,{})
@@ -447,6 +449,49 @@ def cls_token_total_loss(
     losses['cls_total_loss'] = cls_total_loss
 
     return losses
+
+def logits_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    temperature: float = 2.0,
+) -> torch.Tensor:
+    if student_logits.shape != teacher_logits.shape:
+        raise ValueError(
+            f"Student shape {student_logits.shape} does not match "
+            f"teacher shape {teacher_logits.shape}."
+        )
+    if temperature <= 0:
+        raise ValueError("temperature must be greater than 0.")
+
+    student = student_logits.float() / temperature
+    teacher = teacher_logits.detach().float() / temperature
+
+    student_binary_logits = torch.cat(
+        [torch.zeros_like(student), student],
+        dim=-1,
+    )
+    teacher_binary_logits = torch.cat(
+        [torch.zeros_like(teacher), teacher],
+        dim=-1,
+    )
+
+    student_log_probability = F.log_softmax(
+        student_binary_logits,
+        dim=-1,
+    )
+    teacher_probability = F.softmax(
+        teacher_binary_logits,
+        dim=-1,
+    )
+
+    loss = F.kl_div(
+        student_log_probability,
+        teacher_probability,
+        reduction="none",
+    )
+
+    return loss.sum(dim=-1).mean() * temperature**2
+
 
 if __name__ == '__main__':
     a = torch.arange(10).float()

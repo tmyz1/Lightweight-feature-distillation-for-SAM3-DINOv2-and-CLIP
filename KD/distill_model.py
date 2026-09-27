@@ -6,11 +6,13 @@ from torch import nn
 from KD.model.vit_small_patch14_reg4_dinov2 import Vit_Small_feature_extractor
 from KD.model.swin_large_384 import Swin_Sam3_feature_extractor
 from KD.model.RepVit import RepVit_feature_extractor
+from KD.Model_Inference.inference import forward_from_neck
 from KD.adapters import MultiScaleFeatureAlignAdapter,MultiScaleClsTokenAlignAdapter
 from KD.KD_Loss import (
     build_feature_valid_masks,
     cls_token_total_loss,
     features_total_loss,
+    logits_loss
 )
 from KD.build_teacher_model import (
     CLIP_feature_extractor,
@@ -202,6 +204,10 @@ class _BaseDistill(nn.Module):
         return (param for param in self.parameters() if param.requires_grad)
 
     def forward(self, batch: BatchedDatapoint):
+        # text prompt
+        text = batch.find_text_batch
+        # image
+        img = batch.img_batch
         #Student network feature output
         student_outputs = self.Student(batch)
         if len(student_outputs) == 3:
@@ -218,6 +224,24 @@ class _BaseDistill(nn.Module):
             if self.CLIP:
                 clip_features, clip_cls_tokens = self.CLIP(batch)
 
+        #Teacher and student model final logit output
+        student_final_output = forward_from_neck(
+            model = self.Student.model,
+            images = img,
+            neck_features = student_necks,
+            batch = batch,
+        )
+        s_logits = student_final_output['pred_logits']
+
+        with torch.no_grad():
+            teacher_outputs = forward_from_neck(
+                model=self.Sam3.model,
+                images=img,
+                neck_features=sam3_necks,
+                batch=batch,
+            )
+        t_logits = teacher_outputs['pred_logits']
+
         student_features_float = [feature.float() for feature in student_features]
         loss_cfg = self.cfg.get("loss")
         sam3_teacher_features = detach_teacher_tensors(sam3_features)
@@ -232,6 +256,7 @@ class _BaseDistill(nn.Module):
         #Loss function calculation section
         feature_loss_weight = loss_cfg.get("features_loss_weight")
         necks_loss_weight = loss_cfg.get("necks_loss_weight")
+        logits_loss_weight = loss_cfg.get("logits_loss_weight")
         cls_tokens_loss_weight = loss_cfg.get("cls_tokens_loss_weight")
         losses_type = loss_cfg.get("losses_type")
         cls_losses_type = loss_cfg.get(
@@ -293,6 +318,8 @@ class _BaseDistill(nn.Module):
             feature_type="neck",
         )
 
+        logit_loss = logits_loss(s_logits,t_logits)
+
         if use_cls_loss:
             cls_tokens_loss = torch.zeros((), device=self.device)
             if self.Dino_v2:
@@ -335,6 +362,7 @@ class _BaseDistill(nn.Module):
         total_loss = (
             feature_loss * feature_loss_weight
             + neck_loss["total_loss"] * necks_loss_weight
+            + logit_loss * logits_loss_weight
             + cls_tokens_loss * cls_tokens_loss_weight
         )
 
@@ -342,6 +370,7 @@ class _BaseDistill(nn.Module):
             "total_loss": total_loss,
             "avg_feature_loss": feature_loss,
             "neck_loss": neck_loss["total_loss"],
+            "logit_loss": logit_loss * logits_loss_weight,
             "cls_token_loss": cls_tokens_loss,
             "neck_mse_loss": neck_loss.get("mse", torch.zeros((), device=self.device)),
         }

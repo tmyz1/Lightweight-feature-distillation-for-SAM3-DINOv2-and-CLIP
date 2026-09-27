@@ -8,6 +8,9 @@ CUDA_VISIBLE_DEVICES=3 python KD/main.py   --config "/workspace/Vision Distillat
 # 多卡运行
 CUDA_VISIBLE_DEVICES=1,2,3,4 torchrun --standalone --nproc_per_node=4 KD/main.py   --config "/workspace/Vision Distillation/Config/Vit_Small_Distill_server.yaml"   --output "/workspace/Vision Distillation output/eval"
 
+#验证集
+
+
 #查看显卡实时使用情况
 watch -n 1 nvidia-smi
 

@@ -9,9 +9,9 @@ multi_gpu:
   find_unused_parameters: True
 
 dataset:
-  root: "/data/db1/sa1b"
+  root: "/data/db1/coco"
   val_root: "/data/db1/coco"
-  train_split: "images"
+  train_split: "train2017"
   val_split: "val2017"
   eval_category_chunk_size: 4
   train_num_images: null
@@ -62,7 +62,7 @@ Adapter:
   teacher_channel: [1024]
 
 optim:
-  min_lr: 5.0e-7
+  min_lr: 5.0e-6
   trunk_lr: 5.0e-4
   neck_lr: 5.0e-4
   adapter_lr: 2.0e-4
@@ -72,13 +72,13 @@ optim:
 
 param_scheduler:
   warmup_updates: 5000
-  warmup_start_factor: 0.05
+  warmup_start_factor: 0.01
   min_lr: 5.0e-6
 
 loss:
   mask_sam3_padding: true
-  features_loss_weight: 0.5
-  necks_loss_weight: 0.5
+  features_loss_weight: 0.2
+  necks_loss_weight: 0.8
   cls_tokens_loss_weight: 0
   normalize_features: true
   sam3_features_weight: 1.0
@@ -94,7 +94,7 @@ loss:
     smooth_l1: 0.5
 
 train:
-  max_steps: 12
+  max_steps: 20
   eval_every_steps: 1
   log_every_batches: 50
   amp: true
