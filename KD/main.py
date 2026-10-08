@@ -50,58 +50,6 @@ def load_config(path: str) -> Dict[str, Any]:
 def build_distiller(cfg: Dict[str, Any], device: torch.device):
     return Distill(cfg, device)
 
-def save_debug_batch(
-    batch,
-    output_dir: Path,
-    max_images: int = 4,
-):
-
-    vis_dir = output_dir / "debug_images"
-    vis_dir.mkdir(parents=True, exist_ok=True)
-
-    # 还原归一化后的模型输入
-    images = batch.img_batch.detach().float().cpu()
-    images = (images * 0.5 + 0.5).clamp(0, 1)
-    images = images[:max_images]
-
-    h, w = batch.img_batch.shape[-2:]
-
-    # 将归一化坐标转换为像素坐标
-    scale = torch.tensor(
-        [w, h, w, h],
-        device=batch.kd_valid_boxes.device,
-        dtype=batch.kd_valid_boxes.dtype,
-    )
-
-    valid_boxes = (
-        batch.kd_valid_boxes.detach() * scale
-    ).round().long().cpu()
-
-    valid_boxes = valid_boxes[:max_images]
-
-    print("valid boxes in pixels:")
-    print(valid_boxes)
-
-    for index, image in enumerate(images):
-        # 转换为 uint8，供 draw_bounding_boxes 使用
-        image_uint8 = (image * 255).round().to(torch.uint8)
-
-        box = valid_boxes[index:index + 1]
-
-        # 画出真实图像区域，黑色 padding 位于红框之外
-        image_with_box = draw_bounding_boxes(
-            image_uint8,
-            boxes=box,
-            labels=["valid region"],
-            colors="red",
-            width=5,
-        )
-
-        save_image(
-            image_with_box.float() / 255.0,
-            str(vis_dir / f"single_input_{index + 1}_with_box.png"),
-        )
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run KD Training")
     parser.add_argument(
@@ -120,6 +68,7 @@ if __name__ == "__main__":
     parser.add_argument("--eval-only", action="store_true")
     args = parser.parse_args()
     cfg = load_config(args.config)
+    #构建分布式训练
     device, local_rank = initialize_distributed(cfg)
     rank = dist.get_rank() if is_distributed() else 0
     seed_everything(int(cfg.get("train", {}).get("seed", 123)) + rank)
@@ -185,7 +134,7 @@ if __name__ == "__main__":
         destroy_distributed()
         raise SystemExit(0)
 
-    #begin training
+    #训练
     for step in range(start_step, max_steps + 1):
         if is_distributed() and hasattr(dataloader.sampler, "set_epoch"):
             dataloader.sampler.set_epoch(step)
@@ -193,12 +142,6 @@ if __name__ == "__main__":
         running_batches = 0
         for batch_idx, batch in enumerate(dataloader, start=1):
             batch = move_to_device(batch, raw_model.device, cfg)
-            # print(batch.kd_valid_boxes)
-            # save_debug_batch(
-            #     batch=batch,
-            #     output_dir=output_dir,
-            # )
-            # sys.exit(0)
             optimizer.zero_grad(set_to_none=True)
 
             total_loss, logs = forward_with_amp(model, batch, cfg)
@@ -235,7 +178,7 @@ if __name__ == "__main__":
                 f"batches={running_batches} avg_loss_total={avg_loss:.6f}",
                 flush=True,
             )
-
+        #保存最后一次的模型和最好的模型
         metrics = {}
         if eval_every > 0 and step % eval_every == 0:
             if is_main_process():

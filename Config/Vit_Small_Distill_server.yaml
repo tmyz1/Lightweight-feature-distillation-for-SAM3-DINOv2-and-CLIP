@@ -1,20 +1,30 @@
 device: "cuda"
 
 distillation:
+  # teacher_mode : sam3 or sam3_dino_v2_clip ,其中sam3 是只采用sam3 作为教师模型
+  # sam3_dino_v2_clip是将sam3,dino,和clip 同时作为教师模型，dino和clip只有特征层面的损失，sam3是特征和neck层面的损失
   teacher_mode: "sam3"
 
 multi_gpu:
+  #多卡训练
   enabled: True
   backend: "nccl"
   find_unused_parameters: True
 
 dataset:
+  #训练数据所在的位置
   root: "/data/db1/coco"
+  #验证数据所在的位置
   val_root: "/data/db1/coco"
+  #额外的文件夹路径： root + train_split + train 训练数据默认放在train文件夹下面
   train_split: "train2017"
+  # 与训练数据同理， 验证图像最后放在val 文件夹里面
   val_split: "val2017"
+  # 验证阶段使用，sam3 最后采用的是clip的框架，将文字与图像特征做矩阵乘法，eval_category_chunk_size表示多少个文字与图像相乘
   eval_category_chunk_size: 4
+  #训练过程中调用多少数据集中的图像进行训练，null表示全部，不为null主要是用来进行调试的
   train_num_images: null
+  #与 train_num_images 同理
   val_num_images: 100
   max_objects_per_query: 800
   resolution: 1008
@@ -23,6 +33,7 @@ dataset:
   enable_segmentation: False
 
 Student:
+  #学生模型，只包含feature 和 neck 部分，构建完整模型查看 model 文件夹
   model: "vit_small"
   enable_segmentation: true
   fuse_neck_features: true
@@ -30,6 +41,7 @@ Student:
   vit_small_pos_embed_resolution: 518
   position_encoding_resolution: 1008
   vit_small_checkpoint_path: "/workspace/weight/vit_small_patch14_reg4_dinov2.safetensors"
+  #提取特征图像的第几层特征
   vit_small_intermediate_layers: [2, 5, 8, 11]
 
 Sam3:
@@ -57,11 +69,13 @@ DINO_V2:
   dino_v2_intermediate_layers: [5,11,17,23]
 
 Adapter:
+  #用于对齐教师模型与学生模型的通道方向上的维数
   student_channel: [384]
   student_cls_channel: [384]
   teacher_channel: [1024]
 
 optim:
+  #学习率
   min_lr: 5.0e-6
   trunk_lr: 5.0e-4
   neck_lr: 5.0e-4
@@ -76,15 +90,17 @@ param_scheduler:
   min_lr: 5.0e-6
 
 loss:
+  #损失函数权重
   mask_sam3_padding: true
   features_loss_weight: 0.2
   necks_loss_weight: 0.8
+  logits_loss_weight: 20
   cls_tokens_loss_weight: 0
   normalize_features: true
   sam3_features_weight: 1.0
   dino_v2_features_weight: 0.5
   clip_features_weight: 0.5
-  losses_type: ["mse"]
+  losses_type: ["cosine", "mse"]
   cls_losses_type: ["cosine", "smooth_l1"]
   features_loss:
     cosine: 0.1
@@ -99,6 +115,7 @@ train:
   log_every_batches: 50
   amp: true
   seed: 123
+  #是否将中间层的特征损失加入到总损失中去
   return_interm_layers: True
 
 eval:

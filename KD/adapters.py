@@ -146,6 +146,9 @@ class MultiScaleFeatureAlignAdapter(nn.Module):
 
 
 class MultiScaleClsTokenAlignAdapter(nn.Module):
+    """
+    功能类似于MultiScaleFeatureAlignAdapter，主要用于dino和clip中提取的cls_tokens
+    """
     def __init__(
         self,
         student_channels: Sequence[int],

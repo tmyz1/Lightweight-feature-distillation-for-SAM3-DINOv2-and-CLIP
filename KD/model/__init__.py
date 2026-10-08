@@ -1,0 +1,14 @@
+"""
+构建model
+蒸馏sam3模型，只改变backbone和neck部分
+主要包含四个部分：
+1.feature部分：主要需要构建我们下载的对应权重的feature部分框架，并确保可以正确加载权重
+2.neck部分：可采用FPN特征金字塔等一系列操作，增强模型表达能力，可与sam3教师模型空间尺寸，通道对齐，也可以不对齐
+后续会有adapter进行对齐，在少样本训练的情况下，neck部分进行对齐得到的效果更好
+3.build_model: 调用sam3库中的_create_sam3_model函数构建整体的模型，使得neck后续直接连接sam3 neck部分后续模型，
+不同的是，需要修改_create_sam3_model中的backbone部分转成我们的feature和neck部分
+4.特征提取部分：在完成整体模型的构建之后，单独创建一个特征提取的class，class里面包含整体的新模型，但是对应的forward
+函数是用来输出不同层次的feature和neck的，用于后续蒸馏过程中进行损失函数的计算。
+
+5.需要在distill_model.py中的STUDENT_FEATURE_EXTRACTORS新增添加的backbone
+"""

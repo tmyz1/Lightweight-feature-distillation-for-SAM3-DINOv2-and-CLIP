@@ -90,7 +90,7 @@ class _BaseDistill(nn.Module):
 
         self.sam3_checkpoint = self.cfg.get("Sam3", {}).get("checkpoint_path")
 
-        #build Student model and teacher model
+        #构建学生模型和教师模型
         self.Student = self.student_feature_extractor_cls(self.cfg, self.device)
         self.Sam3 = Sam3_feature_extractor(
             checkpoint_path=self.sam3_checkpoint,
@@ -120,7 +120,7 @@ class _BaseDistill(nn.Module):
             )
         self.freeze_parameters()
 
-        #build adapter
+        #build adapter， 用于对齐教师模型和学生模型的空间尺寸和通道维数
         adapter_cfg = self.cfg.get("Adapter")
         student_feature_layers = self.Student.num_feature_layers
 
@@ -171,6 +171,7 @@ class _BaseDistill(nn.Module):
                 teacher_channels=self.teacher_channels,
             ).to(self.device)
 
+    #获取学生模型权重文件位置
     def get_student_checkpoint(self):
         student_cfg = self.cfg.get("Student", {})
         if self.student_model_name == "swin_sam3":
@@ -181,6 +182,7 @@ class _BaseDistill(nn.Module):
             return student_cfg.get("repvit_checkpoint_path")
         return None
 
+    # 冻结参数，教师模型全部冻结，学生模型冻结neck之后的参数
     def freeze_parameters(self) -> None:
         for teacher in (self.Sam3, self.Dino_v2, self.CLIP):
             if teacher is not None:
@@ -199,7 +201,7 @@ class _BaseDistill(nn.Module):
         if self.CLIP:
             self.CLIP.eval()
         return self
-
+    #可训练参数统计
     def trainable_parameters(self):
         return (param for param in self.parameters() if param.requires_grad)
 
@@ -208,7 +210,7 @@ class _BaseDistill(nn.Module):
         text = batch.find_text_batch
         # image
         img = batch.img_batch
-        #Student network feature output
+        #提取学生模型的feature层面和neck层面的特征
         student_outputs = self.Student(batch)
         if len(student_outputs) == 3:
             student_features, student_necks, student_cls_tokens = student_outputs
@@ -216,7 +218,7 @@ class _BaseDistill(nn.Module):
             student_features, student_necks = student_outputs
             student_cls_tokens = None
 
-        #Teacher model feature output
+        #提取教师模型的特征，sam3：feature，neck  clip，dino： feature，clip
         with torch.no_grad():
             sam3_features, sam3_necks = self.Sam3(batch)
             if self.Dino_v2:
@@ -224,23 +226,25 @@ class _BaseDistill(nn.Module):
             if self.CLIP:
                 clip_features, clip_cls_tokens = self.CLIP(batch)
 
-        #Teacher and student model final logit output
-        student_final_output = forward_from_neck(
-            model = self.Student.model,
-            images = img,
-            neck_features = student_necks,
-            batch = batch,
-        )
-        s_logits = student_final_output['pred_logits']
-
-        with torch.no_grad():
-            teacher_outputs = forward_from_neck(
-                model=self.Sam3.model,
+        #学生模型和sam3教师模型的最后logit输出
+        logits_loss_weight = self.cfg.get("loss").get("logits_loss_weight")
+        if logits_loss_weight > 0:
+            student_final_output = forward_from_neck(
+                model=self.Student.model,
                 images=img,
-                neck_features=sam3_necks,
+                neck_features=student_necks,
                 batch=batch,
             )
-        t_logits = teacher_outputs['pred_logits']
+            s_logits = student_final_output['pred_logits']
+
+            with torch.no_grad():
+                teacher_outputs = forward_from_neck(
+                    model=self.Sam3.model,
+                    images=img,
+                    neck_features=sam3_necks,
+                    batch=batch,
+                )
+            t_logits = teacher_outputs['pred_logits']
 
         student_features_float = [feature.float() for feature in student_features]
         loss_cfg = self.cfg.get("loss")
@@ -253,10 +257,9 @@ class _BaseDistill(nn.Module):
         if self.CLIP:
             student_to_clip_features = self.CLIP_adapter(student_features_float,clip_features)
 
-        #Loss function calculation section
+        #损失函数计算
         feature_loss_weight = loss_cfg.get("features_loss_weight")
         necks_loss_weight = loss_cfg.get("necks_loss_weight")
-        logits_loss_weight = loss_cfg.get("logits_loss_weight")
         cls_tokens_loss_weight = loss_cfg.get("cls_tokens_loss_weight")
         losses_type = loss_cfg.get("losses_type")
         cls_losses_type = loss_cfg.get(
@@ -318,7 +321,10 @@ class _BaseDistill(nn.Module):
             feature_type="neck",
         )
 
-        logit_loss = logits_loss(s_logits,t_logits)
+        if logits_loss_weight > 0:
+            logit_loss = logits_loss(s_logits,t_logits)
+        else:
+            logit_loss = torch.zeros((), device=self.device)
 
         if use_cls_loss:
             cls_tokens_loss = torch.zeros((), device=self.device)
@@ -366,6 +372,7 @@ class _BaseDistill(nn.Module):
             + cls_tokens_loss * cls_tokens_loss_weight
         )
 
+        #日志统计数据
         logs = {
             "total_loss": total_loss,
             "avg_feature_loss": feature_loss,

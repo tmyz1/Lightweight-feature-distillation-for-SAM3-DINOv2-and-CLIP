@@ -5,7 +5,7 @@ import argparse
 from torch import nn
 from sam3.model.data_misc import BatchedDatapoint
 from sam3.model.geometry_encoders import Prompt
-
+#根据neck层面的特征和对应的模型得到最后的输出，包含logit输出，bbox输出等一系列输出
 def forward_from_neck(
     model: nn.Module,
     images: torch.Tensor,
